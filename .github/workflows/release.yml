@@ -1,0 +1,53 @@
+name: Build and publish Windows release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+      - name: Install build dependencies
+        run: python -m pip install -r requirements-build.txt
+      - name: Test
+        run: python -m unittest discover -s tests -v
+      - name: Build installer and checksum
+        run: python scripts/build_release.py
+      - name: Keep build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: SauvegardePC-Windows
+          path: |
+            SauvegardePC-Setup.exe
+            SauvegardePC-Setup.exe.sha256
+          if-no-files-found: error
+      - name: Publish complete release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: pwsh
+        run: |
+          gh release create $env:RELEASE_TAG --verify-tag --draft --title "Sauvegarde PC $env:RELEASE_TAG" --notes-file RELEASE_NOTES.md
+          if ($LASTEXITCODE -ne 0) { throw 'Release creation failed' }
+          gh release upload $env:RELEASE_TAG SauvegardePC-Setup.exe SauvegardePC-Setup.exe.sha256
+          if ($LASTEXITCODE -ne 0) { throw 'Release upload failed; the draft remains unpublished' }
+          gh release edit $env:RELEASE_TAG --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Release publication failed' }

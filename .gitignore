@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+!.env.example
+.claude/
+.codex/
+build/
+dist*/
+*.exe
+*.log
+*.spec
+*.sha256
+*.zip
+config.json
+Logiciels/
+Sauvegardes/
+Logo Sauvegarde PC/
+Logo Sauvegarde PC
+/assets/
