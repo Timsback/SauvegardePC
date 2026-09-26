@@ -138,7 +138,7 @@ dossier de destination) est stockée dans
 
 ## Mises à jour et publication
 
-À partir de la version 1.10.0, l'application recherche les nouvelles versions
+À partir de la version 1.10.1, l'application recherche les nouvelles versions
 publiques sur GitHub au lancement et toutes les six heures. Une mise à jour est
 proposée sans interrompre une sauvegarde ou restauration. Le téléchargement est
 vérifié avant l'ouverture de l'assistant d'installation.

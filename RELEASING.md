@@ -6,7 +6,7 @@ stables et téléchargent l'installeur associé après confirmation de l'utilisa
 
 ## Première installation sur les PC
 
-Installez une fois la version **1.10.0 ou ultérieure** depuis
+Installez une fois la version **1.10.1 ou ultérieure** depuis
 [la dernière version](https://github.com/ARBJ-prevention/SauvegardePC/releases/latest).
 Les anciennes versions sans mécanisme de mise à jour ne peuvent pas se mettre à
 jour seules. Les réglages restent dans `%APPDATA%\SauvegardePC` et les sauvegardes

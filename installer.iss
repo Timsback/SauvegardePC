@@ -3,7 +3,7 @@
 
 #define MyAppName "Sauvegarde PC"
 #ifndef MyAppVersion
-#define MyAppVersion "1.10.0"
+#define MyAppVersion "1.10.1"
 #endif
 #define MyAppPublisher "Sauvegarde PC"
 #define MyAppExeName "SauvegardePC.exe"

@@ -56,7 +56,7 @@ class SoftwareInstallationTests(unittest.TestCase):
             self.assert_no_settings()
             self.assertEqual(args[0], 'msiexec.exe')
             self.assertIn('/norestart', args)
-            self.assertTrue(Path(args[2]).is_relative_to(folder))
+            self.assertTrue(Path(args[2]).resolve().is_relative_to(folder.resolve()))
             return subprocess.CompletedProcess(args, 0, '', '')
         with patch.object(engine, 'matching_installed', side_effect=[None, self.program]), \
              patch.object(engine, 'msi_info', return_value=self.info), \
@@ -136,7 +136,7 @@ class SoftwareInstallationTests(unittest.TestCase):
              patch.object(engine, 'run', return_value=subprocess.CompletedProcess([], 0, '', '')) as runner:
             engine.restore_snapshot(folder, lambda _: None)
         self.assertEqual(len(runner.call_args.args[0]), 1)
-        self.assertTrue(Path(runner.call_args.args[0][0]).is_relative_to(folder))
+        self.assertTrue(Path(runner.call_args.args[0][0]).resolve().is_relative_to(folder.resolve()))
         self.assertEqual((self.new/'ISIS/settings.ini').read_text(), 'saved settings')
 
     def test_altered_installer_never_executes(self):
