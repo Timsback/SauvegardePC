@@ -168,6 +168,22 @@ html,body{height:100%;overflow:hidden}
   .side-bottom p,.side-bottom .wave,.side-bottom::before{display:none}
   .side-bottom small{margin-top:0}
 }
+/* Estimation, avertissements, versions, exclusions et réglages. */
+.estimate-row{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:6px 12px;margin-top:12px;color:#b9c9e1;font-size:13px;text-align:center}
+.error-text{color:#ffb3c8}
+.warning{margin:12px 0 0;padding:10px 12px;border:1px solid #f0b46a88;border-radius:9px;background:#5a3b1c80;color:#ffe2bd!important;font-size:13px;line-height:1.5}
+.inline-field{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin:12px 0;color:#c8d5e8;font-size:14px}
+.inline-field input,.inline-field select{background:#0b203b;border:1px solid #7ba9dd72;border-radius:8px;padding:8px 10px;color:#fff;font:inherit}
+.inline-field input[type=number]{width:110px}
+.chip-list{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0 8px}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:5px 6px 5px 12px;border:1px solid #75a7dc55;border-radius:20px;background:#1026438f;color:#e5eeff;font-size:13px}
+.chip button{width:24px;height:24px;border:0;border-radius:50%;background:#ffffff14;color:#dfe9ff;line-height:1}
+.chip button:hover{background:#ffffff2a}
+.version-item{align-items:flex-start;flex-wrap:wrap}.version-item>span:first-child{flex:1;min-width:240px}
+.version-actions,.activity-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.secondary.small{padding:6px 12px;font-size:13px}
+.progress-detail{margin:8px 0 0;color:#9fb5d5;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.choice input[type=radio]{accent-color:#438ff7;width:17px;height:17px}
 @media(max-width:760px){
   .sidebar{flex-basis:190px;width:190px;padding-left:6px;padding-right:6px}
   .brand{padding-left:5px;gap:7px}

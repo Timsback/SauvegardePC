@@ -54,8 +54,22 @@ publique utilisée par des PC.
 Les téléchargements proviennent du dépôt configuré, en HTTPS. Le SHA-256 protège
 contre une corruption du téléchargement ; il ne remplace pas la sécurité du
 compte GitHub. Activez l'authentification à deux facteurs pour les comptes qui
-peuvent publier. Les exécutables ne sont pas signés avec un certificat Windows :
-SmartScreen peut demander une confirmation lors de l'installation.
+peuvent publier.
+
+## Signature de code (optionnelle)
+
+Sans certificat, les exécutables ne sont pas signés et SmartScreen peut demander
+une confirmation lors de l'installation. Pour signer l'exécutable et l'installeur :
+
+1. Obtenez un certificat de signature de code (.pfx) auprès d'une autorité reconnue.
+2. Dans GitHub → Settings → Secrets and variables → Actions, ajoutez
+   `SIGN_PFX_BASE64` (le .pfx encodé en base64 :
+   `[Convert]::ToBase64String([IO.File]::ReadAllBytes('certificat.pfx'))`) et
+   `SIGN_PFX_PASSWORD`.
+
+Le workflow signe alors automatiquement les deux fichiers avec `signtool`
+(horodatage DigiCert). En local, définissez `SIGN_PFX` (chemin du .pfx) et
+`SIGN_PFX_PASSWORD` avant `python scripts/build_release.py`.
 
 ## Compiler localement
 

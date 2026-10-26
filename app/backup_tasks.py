@@ -1,19 +1,21 @@
 """
-Fonctions de sauvegarde pour l'application "Sauvegarde PC".
+Briques Windows de l'application "Sauvegarde PC" : emplacements connus,
+commandes système, navigateurs, messagerie, licences et configuration.
 
-Chaque fonction prend un callback `log(str)` pour remonter sa progression
-vers l'interface graphique, et renvoie un court statut texte.
-Toutes les fonctions sont conçues pour être appelées depuis un thread
-d'arrière-plan (elles ne touchent jamais l'UI directement).
+La copie des fichiers, les versions et la restauration sont dans
+`backup_engine.py`. Chaque fonction prend un callback `log(str)` et est
+conçue pour être appelée depuis un thread d'arrière-plan.
 """
 
+import configparser
 import ctypes
+import fnmatch
 import json
 import os
-import shutil
 import subprocess
 import sys
-from ctypes import wintypes
+import threading
+import time
 from pathlib import Path
 
 USERPROFILE = Path(os.environ.get("USERPROFILE", str(Path.home())))
@@ -23,16 +25,31 @@ LOCALAPPDATA = Path(os.environ.get("LOCALAPPDATA", USERPROFILE / "AppData" / "Lo
 CONFIG_DIR = APPDATA / "SauvegardePC"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
-# Dossiers/fichiers à ne jamais copier (cache, volumineux et régénérés seuls)
-IGNORE_PATTERNS = shutil.ignore_patterns(
+# Caches des navigateurs et messageries : volumineux et régénérés seuls.
+CACHE_PATTERNS = (
     "Cache", "Cache2", "Code Cache", "GPUCache", "Service Worker",
     "*.tmp", "*.log", "ShaderCache", "GrShaderCache", "component_crx_cache",
 )
 
+# Exclusions proposées par défaut pour les fichiers personnels (modifiables).
+DEFAULT_EXCLUSIONS = ["node_modules", "__pycache__", "*.tmp", "~$*", "Thumbs.db"]
+
 
 # --------------------------------------------------------------------------- #
-# Utilitaires généraux
+# Annulation et commandes
 # --------------------------------------------------------------------------- #
+
+class Cancelled(Exception):
+    """Opération interrompue à la demande de l'utilisateur."""
+
+
+CANCEL = threading.Event()
+
+
+def check_cancel() -> None:
+    if CANCEL.is_set():
+        raise Cancelled("Opération annulée.")
+
 
 def is_admin() -> bool:
     try:
@@ -41,15 +58,16 @@ def is_admin() -> bool:
         return False
 
 
-def relaunch_as_admin():
-    """Relance le script actuel avec élévation UAC, puis termine immédiatement le process courant."""
-    params = " ".join(f'"{a}"' for a in sys.argv)
-    ctypes.windll.shell32.ShellExecuteW(
-        None, "runas", sys.executable, params, None, 1
-    )
-    # os._exit (et non sys.exit) : termine le process sans dépendre du bon déroulement de la
-    # boucle d'événements Tkinter, pour ne jamais laisser deux instances tourner en même temps.
-    os._exit(0)
+def relaunch_as_admin() -> bool:
+    """
+    Relance l'application avec élévation UAC. Renvoie False si l'utilisateur
+    refuse ; sinon l'appelant doit fermer cette instance.
+    """
+    # Version compilée : sys.argv[0] est l'exécutable lui-même, à ne pas repasser en argument.
+    args = sys.argv[1:] if getattr(sys, "frozen", False) else sys.argv
+    params = subprocess.list2cmdline(args)
+    result = ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
+    return result > 32
 
 
 def ensure_dir(path: Path) -> Path:
@@ -57,17 +75,19 @@ def ensure_dir(path: Path) -> Path:
     return path
 
 
-def run_command(args, log) -> tuple[bool, str]:
-    """Exécute une commande et journalise stdout/stderr. Renvoie (succès, sortie)."""
+def run_command(args, log, timeout=600, log_output=True) -> tuple[bool, str]:
+    """
+    Exécute une commande et journalise stdout/stderr. Renvoie (succès, sortie).
+    Aucune entrée n'est fournie (une invite interactive échoue au lieu de bloquer),
+    la commande est arrêtée après `timeout` secondes ou dès qu'une annulation est demandée.
+    `log_output=False` évite de recopier une sortie sensible (clé de licence) dans le journal.
+    """
     try:
-        result = subprocess.run(
-            args, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        process = subprocess.Popen(
+            args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+            text=True, encoding="utf-8", errors="replace",
             creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
         )
-        output = (result.stdout or "") + (result.stderr or "")
-        if output.strip():
-            log(output.strip())
-        return result.returncode == 0, output
     except FileNotFoundError:
         msg = f"Commande introuvable : {args[0]}"
         log(f"⚠ {msg}")
@@ -76,108 +96,126 @@ def run_command(args, log) -> tuple[bool, str]:
         log(f"⚠ Erreur lors de l'exécution de {args[0]} : {exc}")
         return False, str(exc)
 
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            stdout, stderr = process.communicate(timeout=0.5)
+            break
+        except subprocess.TimeoutExpired:
+            if CANCEL.is_set() or time.monotonic() > deadline:
+                process.kill()
+                process.communicate()
+                if CANCEL.is_set():
+                    raise Cancelled("Opération annulée.")
+                log(f"⚠ Commande interrompue après {timeout // 60 or 1} min sans réponse : {args[0]}")
+                return False, ""
+    output = (stdout or "") + (stderr or "")
+    if log_output and output.strip():
+        log(output.strip())
+    return process.returncode == 0, output
 
-def _is_within(path: Path, potential_parent: Path) -> bool:
-    """True si `path` est égal ou contenu dans `potential_parent`."""
+
+def running_processes(names) -> list[str]:
+    """Noms d'exécutables (parmi `names`) actuellement lancés, via tasklist."""
     try:
-        path.relative_to(potential_parent)
-        return True
-    except ValueError:
+        result = subprocess.run(
+            ["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, errors="replace",
+            stdin=subprocess.DEVNULL, timeout=20,
+            creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    running = {line.split('","')[0].strip('"').casefold() for line in result.stdout.splitlines() if line}
+    return sorted({n for n in names if n.casefold() in running})
+
+
+# --------------------------------------------------------------------------- #
+# Verrou partagé entre l'interface et la sauvegarde automatique
+# --------------------------------------------------------------------------- #
+
+class OperationLock:
+    """
+    Mutex Windows nommé : empêche la sauvegarde planifiée et l'interface de
+    travailler en même temps. Doit être acquis et relâché dans le même thread.
+    """
+    NAME = "Local\\SauvegardePC-operation"
+
+    def __init__(self):
+        self.handle = None
+
+    def acquire(self) -> bool:
+        try:
+            kernel32 = ctypes.windll.kernel32
+        except AttributeError:
+            return True
+        handle = kernel32.CreateMutexW(None, False, self.NAME)
+        if not handle:
+            return True
+        # WAIT_OBJECT_0 = 0, WAIT_ABANDONED = 0x80 (instance précédente plantée).
+        if kernel32.WaitForSingleObject(handle, 0) in (0, 0x80):
+            self.handle = handle
+            return True
+        kernel32.CloseHandle(handle)
         return False
 
-
-def _winlong(path) -> str:
-    """
-    Préfixe \\\\?\\ pour contourner la limite Windows de 260 caractères par chemin
-    (fréquent avec des dossiers de pages web enregistrées, ex. « ..._fichiers\\embed_fichiers »).
-    """
-    s = str(path)
-    if os.name != "nt" or s.startswith("\\\\?\\"):
-        return s
-    if s.startswith("\\\\"):
-        return "\\\\?\\UNC\\" + s[2:]
-    return "\\\\?\\" + s
+    def release(self) -> None:
+        if self.handle:
+            ctypes.windll.kernel32.ReleaseMutex(self.handle)
+            ctypes.windll.kernel32.CloseHandle(self.handle)
+            self.handle = None
 
 
-def _mkdir_long(path: Path) -> None:
-    os.makedirs(_winlong(path), exist_ok=True)
+# --------------------------------------------------------------------------- #
+# Disques et volumes
+# --------------------------------------------------------------------------- #
+
+def _drive_letter(path) -> str:
+    drive = os.path.splitdrive(os.path.abspath(str(path)))[0]
+    return drive.upper() if len(drive) == 2 and drive[1] == ":" else ""
 
 
-def _count_files(src: Path, ignore=None) -> int:
-    """Compte rapidement le nombre de fichiers à copier (pour la barre de progression)."""
-    total = 0
-    for root, dirs, files in os.walk(src):
-        if ignore:
-            excluded = ignore(root, dirs + files)
-            dirs[:] = [d for d in dirs if d not in excluded]
-            files = [f for f in files if f not in excluded]
-        total += len(files)
-    return total
-
-
-def copy_tree_safe(src: Path, dst: Path, log, ignore=None, progress=None) -> int:
-    """
-    Copie récursive tolérante aux erreurs : un fichier verrouillé ou
-    inaccessible (ex. navigateur ouvert, antivirus) ne bloque pas le reste.
-    `progress`, si fourni, est appelé progress(copiés, total) après chaque fichier.
-    Renvoie le nombre de fichiers copiés.
-    """
-    if not src.exists():
-        log(f"— Ignoré (introuvable) : {src}")
-        return 0
-
-    src_resolved = src.resolve()
-    dst_resolved = dst.resolve()
-    if dst_resolved == src_resolved or _is_within(dst_resolved, src_resolved):
-        log(
-            f"⚠ Copie annulée : la destination ({dst}) est identique ou se trouve à l'intérieur du "
-            f"dossier source ({src}). Cela créerait une copie infinie imbriquée dans elle-même — "
-            "choisissez un dossier de destination extérieur au(x) dossier(s) sauvegardé(s)."
-        )
-        return 0
-
-    total = _count_files(src, ignore) if progress else 0
-    if progress:
-        progress(0, total)
-
-    copied = 0
+def physical_disk_number(path):
+    """Numéro du disque physique portant `path` (None pour un partage réseau ou en cas d'échec)."""
+    drive = _drive_letter(path)
+    if not drive:
+        return None
     try:
-        _mkdir_long(dst)
-    except OSError as exc:
-        log(f"⚠ Impossible de créer le dossier de destination {dst} : {exc}")
-        return 0
+        kernel32 = ctypes.windll.kernel32
+    except AttributeError:
+        return None
+    kernel32.CreateFileW.restype = ctypes.c_void_p
+    handle = kernel32.CreateFileW(f"\\\\.\\{drive}", 0, 3, None, 3, 0, None)
+    if handle in (None, ctypes.c_void_p(-1).value):
+        return None
+    try:
+        buffer = (ctypes.c_ulong * 3)()  # DeviceType, DeviceNumber, PartitionNumber
+        returned = ctypes.c_ulong()
+        ok = kernel32.DeviceIoControl(ctypes.c_void_p(handle), 0x2D1080, None, 0, buffer,
+                                      ctypes.sizeof(buffer), ctypes.byref(returned), None)
+        return buffer[1] if ok else None
+    finally:
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
 
-    for root, dirs, files in os.walk(src):
-        rel = Path(root).relative_to(src)
-        target_root = dst / rel
 
-        if ignore:
-            excluded = ignore(root, dirs + files)
-            dirs[:] = [d for d in dirs if d not in excluded]
-            files = [f for f in files if f not in excluded]
+def same_disk_as_system(path) -> bool:
+    """True si la destination est sur le même disque physique que Windows."""
+    system = os.environ.get("SystemDrive", "C:")
+    if _drive_letter(path) == system.upper():
+        return True
+    disk = physical_disk_number(path)
+    return disk is not None and disk == physical_disk_number(system + "\\")
 
-        try:
-            _mkdir_long(target_root)
-        except OSError as exc:
-            log(f"  ⚠ Dossier ignoré (chemin trop long ou invalide) : {target_root} ({exc.__class__.__name__})")
-            dirs[:] = []  # inutile de descendre plus profond, ce sera pire
-            continue
 
-        for name in files:
-            src_file = Path(root) / name
-            dst_file = target_root / name
-            try:
-                shutil.copy2(_winlong(src_file), _winlong(dst_file))
-                copied += 1
-            except (PermissionError, OSError) as exc:
-                log(
-                    f"  ⚠ Fichier ignoré (verrouillé/inaccessible/chemin trop long) : "
-                    f"{src_file.name} ({exc.__class__.__name__})"
-                )
-            finally:
-                if progress:
-                    progress(copied, total)
-    return copied
+def filesystem_name(path) -> str:
+    """Système de fichiers du volume (« NTFS », « exFAT », « FAT32 »…), vide si inconnu."""
+    drive = _drive_letter(path)
+    root = drive + "\\" if drive else os.path.join(*Path(os.path.abspath(str(path))).parts[:2]) + "\\"
+    name = ctypes.create_unicode_buffer(64)
+    try:
+        ok = ctypes.windll.kernel32.GetVolumeInformationW(root, None, 0, None, None, None, name, 64)
+    except AttributeError:
+        return ""
+    return name.value if ok else ""
 
 
 # --------------------------------------------------------------------------- #
@@ -239,154 +277,190 @@ def get_known_folder(name: str) -> Path:
 STANDARD_FOLDERS = ["Bureau", "Documents", "Images", "Téléchargements", "Vidéos", "Musique"]
 
 
-def backup_standard_folders(dest: Path, selected: list[str], log, progress=None) -> None:
-    target_base = ensure_dir(dest / "Fichiers personnels")
-    for name in selected:
-        try:
-            folder = get_known_folder(name)
-            log(f"→ Copie de « {name} » depuis {folder} ...")
-            cb = (lambda done, total, name=name: progress(name, done, total)) if progress else None
-            n = copy_tree_safe(folder, target_base / name, log, progress=cb)
-            log(f"  ✓ {n} fichier(s) copié(s) pour « {name} ».")
-        except Exception as exc:
-            log(f"  ⚠ Erreur inattendue sur « {name} », dossier ignoré, suite de la sauvegarde : {exc}")
+class FileFilter:
+    """Exclusions de l'utilisateur (noms ou motifs) et taille maximale par fichier."""
+
+    def __init__(self, patterns=(), max_size_mb=0, download_cloud=False):
+        self.patterns = [p.casefold() for p in patterns if p and p.strip()]
+        self.max_size = int(max_size_mb or 0) * 1024 * 1024
+        self.download_cloud = bool(download_cloud)
+
+    @classmethod
+    def from_config(cls, config):
+        return cls(config.get("exclusions", DEFAULT_EXCLUSIONS), config.get("max_file_size_mb", 0),
+                   config.get("onedrive_cloud") == "download")
+
+    def excluded(self, name: str) -> bool:
+        name = name.casefold()
+        return any(fnmatch.fnmatchcase(name, p) for p in self.patterns)
 
 
-def backup_saved_games(dest: Path, log, progress=None) -> None:
-    src = USERPROFILE / "Saved Games"
-    if not src.exists():
-        log("— Aucun dossier « Saved Games » trouvé.")
-        return
-    log("→ Copie du dossier « Saved Games » (sauvegardes de jeux) ...")
-    cb = (lambda done, total: progress("Saved Games", done, total)) if progress else None
-    n = copy_tree_safe(src, dest / "Fichiers personnels" / "Saved Games", log, progress=cb)
-    log(f"  ✓ {n} fichier(s) copié(s).")
-
-
-def backup_custom_folders(dest: Path, folders: list[str], log, progress=None) -> None:
-    target_base = ensure_dir(dest / "Divers (dossiers personnalisés)")
-    for folder_str in folders:
-        try:
-            src = Path(folder_str)
-            if not src.exists():
-                log(f"— Dossier personnalisé introuvable, ignoré : {src}")
-                continue
-            log(f"→ Copie du dossier personnalisé : {src} ...")
-            cb = (lambda done, total, n=src.name: progress(n, done, total)) if progress else None
-            n = copy_tree_safe(src, target_base / src.name, log, progress=cb)
-            log(f"  ✓ {n} fichier(s) copié(s) pour « {src.name} ».")
-        except Exception as exc:
-            log(f"  ⚠ Erreur inattendue sur « {folder_str} », dossier ignoré, suite de la sauvegarde : {exc}")
+CACHE_FILTER = FileFilter(CACHE_PATTERNS, download_cloud=True)
 
 
 # --------------------------------------------------------------------------- #
 # 2. Navigateurs
 # --------------------------------------------------------------------------- #
 
-BROWSER_PROFILE_PATHS = {
-    "Google Chrome": LOCALAPPDATA / "Google" / "Chrome" / "User Data",
-    "Microsoft Edge": LOCALAPPDATA / "Microsoft" / "Edge" / "User Data",
-}
+def chromium_browsers() -> dict[str, tuple[Path, str]]:
+    """Navigateurs Chromium : nom → (dossier de profils, exécutable)."""
+    return {
+        "Google Chrome": (LOCALAPPDATA / "Google" / "Chrome" / "User Data", "chrome.exe"),
+        "Microsoft Edge": (LOCALAPPDATA / "Microsoft" / "Edge" / "User Data", "msedge.exe"),
+        "Brave": (LOCALAPPDATA / "BraveSoftware" / "Brave-Browser" / "User Data", "brave.exe"),
+        "Vivaldi": (LOCALAPPDATA / "Vivaldi" / "User Data", "vivaldi.exe"),
+        "Opera": (APPDATA / "Opera Software" / "Opera Stable", "opera.exe"),
+        "Opera GX": (APPDATA / "Opera Software" / "Opera GX Stable", "opera.exe"),
+    }
+
+
+def firefox_dir() -> Path:
+    return APPDATA / "Mozilla" / "Firefox"
+
+
+def thunderbird_dir() -> Path:
+    return APPDATA / "Thunderbird"
+
+
+BROWSER_PROCESSES = {name: exe for name, (_, exe) in chromium_browsers().items()}
+BROWSER_PROCESSES["Mozilla Firefox"] = "firefox.exe"
 
 
 def detect_browsers() -> dict[str, bool]:
-    detected = {name: path.exists() for name, path in BROWSER_PROFILE_PATHS.items()}
-    detected["Mozilla Firefox"] = (APPDATA / "Mozilla" / "Firefox" / "Profiles").exists()
+    detected = {name: path.exists() for name, (path, _) in chromium_browsers().items()}
+    detected["Mozilla Firefox"] = (firefox_dir() / "Profiles").exists()
     return detected
 
 
-def backup_chromium_browser(browser_name: str, dest: Path, log, progress=None) -> None:
-    src = BROWSER_PROFILE_PATHS.get(browser_name)
-    if not src or not src.exists():
-        log(f"— {browser_name} : profil introuvable, ignoré.")
-        return
-    log(f"→ Copie du profil {browser_name} (favoris, mots de passe chiffrés, historique) ...")
-    log("  ⚠ Fermez le navigateur avant cette opération pour éviter les fichiers verrouillés.")
-    cb = (lambda done, total: progress(browser_name, done, total)) if progress else None
-    n = copy_tree_safe(src, dest / "Navigateurs" / browser_name, log, ignore=IGNORE_PATTERNS, progress=cb)
-    log(f"  ✓ {n} fichier(s) copié(s) pour {browser_name}.")
-    log("  ℹ Les mots de passe restent chiffrés par Windows (DPAPI) : la restauration")
-    log("    fiable passe surtout par la synchronisation de compte Google/Microsoft.")
+def mozilla_profiles(app_dir: Path) -> list[Path]:
+    """Profils existants d'une application Mozilla, lus dans profiles.ini (relatifs ou
+    absolus), avec repli sur le dossier « Profiles » si le fichier est absent ou illisible."""
+    found: list[Path] = []
+    parser = configparser.RawConfigParser()
+    try:
+        parser.read(app_dir / "profiles.ini", encoding="utf-8")
+    except (configparser.Error, OSError, UnicodeDecodeError):
+        parser = configparser.RawConfigParser()
+    for section in parser.sections():
+        if not section.startswith("Profile") or not parser.has_option(section, "Path"):
+            continue
+        raw = parser.get(section, "Path")
+        path = app_dir / raw if parser.get(section, "IsRelative", fallback="1") == "1" else Path(raw)
+        if path.is_dir() and path not in found:
+            found.append(path)
+    if not found and (app_dir / "Profiles").is_dir():
+        found = sorted(p for p in (app_dir / "Profiles").iterdir() if p.is_dir())
+    return found
 
 
-def backup_firefox(dest: Path, log, progress=None) -> None:
-    profiles_dir = APPDATA / "Mozilla" / "Firefox" / "Profiles"
-    if not profiles_dir.exists():
-        log("— Firefox : aucun profil trouvé, ignoré.")
-        return
-    log("→ Copie du/des profil(s) Firefox (favoris, mots de passe, historique) ...")
-    log("  ⚠ Fermez Firefox avant cette opération pour éviter les fichiers verrouillés.")
-    target = ensure_dir(dest / "Navigateurs" / "Mozilla Firefox")
-    total = 0
-    for profile in profiles_dir.iterdir():
-        if profile.is_dir():
-            cb = (lambda done, t, n=profile.name: progress(f"Firefox ({n})", done, t)) if progress else None
-            total += copy_tree_safe(profile, target / profile.name, log, ignore=IGNORE_PATTERNS, progress=cb)
-    log(f"  ✓ {total} fichier(s) copié(s) pour Firefox.")
+def thunderbird_profiles() -> list[Path]:
+    return mozilla_profiles(thunderbird_dir())
 
 
-def detect_browser_backups(backup_root: Path) -> dict[str, bool]:
-    """Détecte, dans un dossier de sauvegarde choisi par l'utilisateur, quels navigateurs
-    ont un profil disponible pour restauration."""
-    nav_dir = backup_root / "Navigateurs"
-    detected = {name: (nav_dir / name).exists() for name in BROWSER_PROFILE_PATHS}
-    detected["Mozilla Firefox"] = (nav_dir / "Mozilla Firefox").exists()
-    return detected
+def mozilla_default_profile(ini_text: str) -> str:
+    """Nom du dossier du profil par défaut décrit par un profiles.ini sauvegardé."""
+    parser = configparser.RawConfigParser()
+    try:
+        parser.read_string(ini_text)
+    except configparser.Error:
+        return ""
+    for section in parser.sections():
+        if section.startswith("Install") and parser.has_option(section, "Default"):
+            return Path(parser.get(section, "Default").replace("\\", "/")).name
+    for section in parser.sections():
+        if section.startswith("Profile") and parser.get(section, "Default", fallback="0") == "1":
+            return Path(parser.get(section, "Path", fallback="").replace("\\", "/")).name
+    return ""
 
 
-def restore_chromium_browser(browser_name: str, backup_root: Path, log, progress=None) -> None:
-    dst = BROWSER_PROFILE_PATHS.get(browser_name)
-    if not dst:
-        log(f"⚠ Navigateur inconnu : {browser_name}")
-        return
-    src = backup_root / "Navigateurs" / browser_name
-    if not src.exists():
-        log(f"— {browser_name} : aucune sauvegarde trouvée dans {src}, ignoré.")
-        return
-    log(f"→ Restauration du profil {browser_name} vers {dst} ...")
-    log("  ⚠ Fermez complètement le navigateur avant cette opération (y compris depuis la zone de notification).")
-    cb = (lambda done, total: progress(browser_name, done, total)) if progress else None
-    n = copy_tree_safe(src, dst, log, ignore=IGNORE_PATTERNS, progress=cb)
-    log(f"  ✓ {n} fichier(s) restauré(s) pour {browser_name}.")
-    log("  ℹ Favoris et historique sont restaurés. Les mots de passe enregistrés restent chiffrés par")
-    log("    Windows (DPAPI) : ils ne se déchiffreront que sur la session Windows d'origine. Après une")
-    log("    réinstallation de Windows, préférez la synchronisation de compte Google/Microsoft.")
+def register_mozilla_profiles(app_dir: Path, names: list[str], default: str = "") -> None:
+    """
+    Déclare des profils restaurés (dans `app_dir/Profiles`) dans profiles.ini et
+    installs.ini, et en fait le profil par défaut, pour que Firefox/Thunderbird
+    les ouvrent au lieu de créer un profil vide.
+    """
+    ini = app_dir / "profiles.ini"
+    parser = configparser.RawConfigParser()
+    parser.optionxform = str
+    if ini.exists():
+        parser.read(ini, encoding="utf-8")
+    if not parser.has_section("General"):
+        parser.add_section("General")
+    parser.set("General", "StartWithLastProfile", "1")
+    if not parser.has_option("General", "Version"):
+        parser.set("General", "Version", "2")
+
+    sections = {}
+    for section in parser.sections():
+        if section.startswith("Profile") and parser.has_option(section, "Path"):
+            sections[Path(parser.get(section, "Path").replace("\\", "/")).name.casefold()] = section
+    index = 0
+    for name in names:
+        if name.casefold() in sections:
+            continue
+        while parser.has_section(f"Profile{index}"):
+            index += 1
+        section = f"Profile{index}"
+        parser.add_section(section)
+        parser.set(section, "Name", name.split(".", 1)[-1] or name)
+        parser.set(section, "IsRelative", "1")
+        parser.set(section, "Path", f"Profiles/{name}")
+        sections[name.casefold()] = section
+
+    default = default if default in names else (names[0] if names else "")
+    if default:
+        for section in sections.values():
+            parser.remove_option(section, "Default")
+        parser.set(sections[default.casefold()], "Default", "1")
+        for section in parser.sections():
+            if section.startswith("Install"):
+                parser.set(section, "Default", f"Profiles/{default}")
+                parser.set(section, "Locked", "1")
+    ensure_dir(app_dir)
+    _write_ini(parser, ini)
+
+    installs = app_dir / "installs.ini"
+    if default and installs.exists():
+        other = configparser.RawConfigParser()
+        other.optionxform = str
+        other.read(installs, encoding="utf-8")
+        for section in other.sections():
+            other.set(section, "Default", f"Profiles/{default}")
+            other.set(section, "Locked", "1")
+        _write_ini(other, installs)
 
 
-def restore_firefox(backup_root: Path, log, progress=None) -> None:
-    src_root = backup_root / "Navigateurs" / "Mozilla Firefox"
-    if not src_root.exists():
-        log("— Firefox : aucune sauvegarde trouvée, ignoré.")
-        return
-    log("→ Restauration du/des profil(s) Firefox ...")
-    log("  ⚠ Fermez complètement Firefox avant cette opération.")
-    target = ensure_dir(APPDATA / "Mozilla" / "Firefox" / "Profiles")
-    total = 0
-    for profile in src_root.iterdir():
-        if profile.is_dir():
-            cb = (lambda done, t, n=profile.name: progress(f"Firefox ({n})", done, t)) if progress else None
-            total += copy_tree_safe(profile, target / profile.name, log, ignore=IGNORE_PATTERNS, progress=cb)
-    log(f"  ✓ {total} fichier(s) restauré(s) pour Firefox.")
-    log("  ℹ Si Firefox démarre sur un profil vide, ouvrez about:profiles pour rattacher le profil restauré.")
+def _write_ini(parser, path: Path) -> None:
+    temporary = path.with_name(path.name + ".tmp")
+    with open(temporary, "w", encoding="utf-8") as stream:
+        parser.write(stream, space_around_delimiters=False)
+    os.replace(temporary, path)
 
 
 # --------------------------------------------------------------------------- #
 # 3. Clés Windows & licences
 # --------------------------------------------------------------------------- #
 
+def mask_key(key: str) -> str:
+    """Ne laisse visibles que les 5 derniers caractères d'une clé (journal et rapport)."""
+    return "".join(c if c == "-" else "•" for c in key[:-5]) + key[-5:] if len(key) > 5 else "•" * len(key)
+
+
 def get_windows_key(log) -> str:
     log("→ Lecture de la clé Windows OEM (nécessite les droits administrateur) ...")
     ok, output = run_command(
         [
-            "powershell", "-NoProfile", "-Command",
+            "powershell", "-NoProfile", "-NonInteractive", "-Command",
             "(Get-CimInstance -Query \"select * from SoftwareLicensingService\").OA3xOriginalProductKey",
         ],
-        log,
+        log, timeout=120, log_output=False,
     )
     key = output.strip()
     if ok and key:
-        log(f"  ✓ Clé trouvée : {key}")
+        log(f"  ✓ Clé trouvée : {mask_key(key)} (complète dans Licences\\licences.txt)")
         return key
+    if not ok and key:
+        log(f"  ⚠ Lecture de la clé impossible : {key.splitlines()[0][:200]}")
     log("  — Aucune clé OEM trouvée (normal pour certains PC : la licence est numérique, liée au compte Microsoft).")
     return ""
 
@@ -418,18 +492,23 @@ def save_licenses(dest: Path, licenses: list[dict], log) -> None:
 # 4. Programmes installés (winget)
 # --------------------------------------------------------------------------- #
 
+# Sans ces options, winget attend une réponse « Y/N » aux conditions des sources
+# lors de sa première utilisation et l'opération ne se termine jamais.
+WINGET_NON_INTERACTIVE = ("--accept-source-agreements", "--disable-interactivity")
+
+
 def export_installed_programs(dest: Path, log) -> None:
     target = ensure_dir(dest / "Programmes")
     json_path = target / "programmes.json"
     log("→ Export de la liste des programmes avec winget ...")
-    ok, _ = run_command(["winget", "export", "-o", str(json_path)], log)
+    ok, _ = run_command(["winget", "export", "-o", str(json_path), *WINGET_NON_INTERACTIVE], log, timeout=600)
     if ok:
         log(f"  ✓ Liste exportée : {json_path}")
     else:
         log("  ⚠ winget export a échoué ou winget est absent.")
 
     log("→ Récupération de la liste complète (y compris logiciels non-winget) ...")
-    ok2, output = run_command(["winget", "list"], log)
+    ok2, output = run_command(["winget", "list", *WINGET_NON_INTERACTIVE], log, timeout=600)
     if output.strip():
         (target / "programmes_liste_complete.txt").write_text(output, encoding="utf-8")
         log(f"  ✓ Liste complète enregistrée : {target / 'programmes_liste_complete.txt'}")
@@ -437,50 +516,49 @@ def export_installed_programs(dest: Path, log) -> None:
         log("    ne seront PAS réinstallés automatiquement : notez-les pour une réinstallation manuelle.")
 
 
-# --------------------------------------------------------------------------- #
-# 5. Courrier électronique
-# --------------------------------------------------------------------------- #
-
-def backup_email(dest: Path, log, progress=None) -> None:
-    target = ensure_dir(dest / "Email")
-
-    outlook_dir = LOCALAPPDATA / "Microsoft" / "Outlook"
-    if outlook_dir.exists():
-        log("→ Recherche de fichiers Outlook (.pst / .ost) ...")
-        found = list(outlook_dir.glob("*.pst")) + list(outlook_dir.glob("*.ost"))
-        if found:
-            out_target = ensure_dir(target / "Outlook")
-            for f in found:
-                try:
-                    shutil.copy2(f, out_target / f.name)
-                    log(f"  ✓ Copié : {f.name}")
-                except (PermissionError, OSError) as exc:
-                    log(f"  ⚠ Impossible de copier {f.name} (probablement ouvert dans Outlook) : {exc.__class__.__name__}")
-        else:
-            log("  — Aucun fichier .pst/.ost trouvé dans le dossier Outlook par défaut.")
-    else:
-        log("— Outlook : dossier de données non trouvé, ignoré.")
-
-    tb_ini = APPDATA / "Thunderbird" / "profiles.ini"
-    tb_profiles_dir = APPDATA / "Thunderbird"
-    if tb_ini.exists():
-        log("→ Copie du/des profil(s) Thunderbird ...")
-        log("  ⚠ Fermez Thunderbird avant cette opération.")
-        tb_target = ensure_dir(target / "Thunderbird")
-        total = 0
-        for item in tb_profiles_dir.glob("*.default*"):
-            if item.is_dir():
-                cb = (lambda done, t, n=item.name: progress(f"Thunderbird ({n})", done, t)) if progress else None
-                total += copy_tree_safe(item, tb_target / item.name, log, ignore=IGNORE_PATTERNS, progress=cb)
-        log(f"  ✓ {total} fichier(s) copié(s) pour Thunderbird.")
-    else:
-        log("— Thunderbird : non installé ou aucun profil trouvé, ignoré.")
-
-    log("ℹ Pour un webmail (Gmail, Outlook.com...) : rien à sauvegarder, vos messages restent en ligne.")
+def import_installed_programs(source: Path, log) -> bool:
+    """Réinstalle les programmes de programmes.json avec winget (Internet requis)."""
+    json_path = source / "Programmes" / "programmes.json"
+    if not json_path.is_file():
+        log("— Programmes : aucune liste winget dans cette sauvegarde.")
+        return False
+    log("→ Réinstallation des programmes avec winget (peut durer longtemps) ...")
+    ok, _ = run_command(["winget", "import", "-i", str(json_path), "--ignore-unavailable",
+                         "--accept-package-agreements", *WINGET_NON_INTERACTIVE], log, timeout=3 * 3600)
+    log("  ✓ Programmes réinstallés." if ok else
+        "  ⚠ winget import a signalé des erreurs : certains programmes restent à installer à la main.")
+    return ok
 
 
 # --------------------------------------------------------------------------- #
-# 6. Profils Wi-Fi (nécessite les droits administrateur)
+# 5. Messagerie
+# --------------------------------------------------------------------------- #
+
+def outlook_data_files() -> list[Path]:
+    """Fichiers .pst trouvés aux emplacements habituels d'Outlook (sans doublon)."""
+    documents = get_known_folder("Documents")
+    folders = [LOCALAPPDATA / "Microsoft" / "Outlook", APPDATA / "Microsoft" / "Outlook",
+               documents / "Fichiers Outlook", documents / "Outlook Files"]
+    found, seen = [], set()
+    for folder in folders:
+        try:
+            candidates = sorted(folder.glob("*.pst")) if folder.is_dir() else []
+        except OSError:
+            continue
+        for path in candidates:
+            key = os.path.normcase(str(path.resolve()))
+            if key not in seen and path.is_file():
+                seen.add(key)
+                found.append(path)
+    return found
+
+
+def outlook_signatures_dir() -> Path:
+    return APPDATA / "Microsoft" / "Signatures"
+
+
+# --------------------------------------------------------------------------- #
+# 6. Profils Wi-Fi et pilotes (nécessitent les droits administrateur)
 # --------------------------------------------------------------------------- #
 
 def export_wifi_profiles(dest: Path, log) -> None:
@@ -489,16 +567,29 @@ def export_wifi_profiles(dest: Path, log) -> None:
         return
     target = ensure_dir(dest / "WiFi")
     log("→ Export des profils Wi-Fi enregistrés (avec mots de passe) ...")
-    ok, _ = run_command(["netsh", "wlan", "export", "profile", "key=clear", f"folder={target}"], log)
+    ok, _ = run_command(["netsh", "wlan", "export", "profile", "key=clear", f"folder={target}"], log, timeout=120)
     if ok:
         log(f"  ✓ Profils Wi-Fi exportés dans {target}")
     else:
         log("  ⚠ L'export des profils Wi-Fi a échoué.")
 
 
-# --------------------------------------------------------------------------- #
-# 7. Pilotes (nécessite les droits administrateur)
-# --------------------------------------------------------------------------- #
+def import_wifi_profiles(source: Path, log) -> int:
+    profiles = sorted((source / "WiFi").glob("*.xml")) if (source / "WiFi").is_dir() else []
+    if not profiles:
+        log("— Wi-Fi : aucun profil dans cette sauvegarde.")
+        return 0
+    scope = "all" if is_admin() else "current"
+    log(f"→ Import de {len(profiles)} profil(s) Wi-Fi ...")
+    imported = 0
+    for path in profiles:
+        check_cancel()
+        ok, _ = run_command(["netsh", "wlan", "add", "profile", f"filename={path}", f"user={scope}"],
+                            log, timeout=60, log_output=False)
+        imported += ok
+        log(f"  {'✓' if ok else '⚠'} {path.stem}")
+    return imported
+
 
 def export_drivers(dest: Path, log) -> None:
     if not is_admin():
@@ -506,15 +597,30 @@ def export_drivers(dest: Path, log) -> None:
         return
     target = ensure_dir(dest / "Pilotes")
     log("→ Export des pilotes installés (peut prendre plusieurs minutes) ...")
-    ok, _ = run_command(["dism", "/online", "/export-driver", f"/destination:{target}"], log)
+    ok, _ = run_command(["dism", "/online", "/export-driver", f"/destination:{target}"], log, timeout=1800)
     if ok:
         log(f"  ✓ Pilotes exportés dans {target}")
     else:
         log("  ⚠ L'export des pilotes a échoué.")
 
 
+def import_drivers(source: Path, log) -> bool:
+    folder = source / "Pilotes"
+    if not folder.is_dir() or not any(folder.rglob("*.inf")):
+        log("— Pilotes : aucun pilote dans cette sauvegarde.")
+        return False
+    if not is_admin():
+        log("⚠ Droits administrateur requis pour installer les pilotes. Relancez l'application en administrateur.")
+        return False
+    log("→ Installation des pilotes sauvegardés (peut prendre plusieurs minutes) ...")
+    ok, _ = run_command(["pnputil", "/add-driver", str(folder / "*.inf"), "/subdirs", "/install"], log, timeout=1800)
+    log("  ✓ Pilotes ajoutés au magasin Windows." if ok else
+        "  ⚠ Certains pilotes n'ont pas pu être installés (déjà présents ou incompatibles).")
+    return ok
+
+
 # --------------------------------------------------------------------------- #
-# Configuration persistée (dossiers personnalisés, checklist, licences UI)
+# Configuration persistée
 # --------------------------------------------------------------------------- #
 
 DEFAULT_CONFIG = {
@@ -522,6 +628,12 @@ DEFAULT_CONFIG = {
     "checklist": {},
     "last_destination": "",
     "last_backup_at": "",
+    "exclusions": list(DEFAULT_EXCLUSIONS),
+    "max_file_size_mb": 0,
+    "onedrive_cloud": "skip",
+    "keep_versions": 3,
+    "verify_after_copy": True,
+    "auto_backup": {"enabled": False, "interval_days": 7},
 }
 
 
@@ -529,52 +641,53 @@ def load_config() -> dict:
     if CONFIG_FILE.exists():
         try:
             data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-            merged = DEFAULT_CONFIG.copy()
+            if not isinstance(data, dict):
+                raise ValueError("configuration invalide")
+            merged = json.loads(json.dumps(DEFAULT_CONFIG))
             merged.update(data)
             return merged
         except Exception:
-            pass
-    return DEFAULT_CONFIG.copy()
+            # Conserve le fichier illisible pour une récupération manuelle
+            # au lieu de l'écraser à la prochaine sauvegarde des réglages.
+            try:
+                os.replace(CONFIG_FILE, CONFIG_FILE.with_name("config.corrompu.json"))
+            except OSError:
+                pass
+    return json.loads(json.dumps(DEFAULT_CONFIG))
 
 
 def save_config(config: dict) -> None:
+    """Écriture atomique : un arrêt brutal laisse l'ancienne configuration intacte."""
     ensure_dir(CONFIG_DIR)
-    CONFIG_FILE.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
-
-
-# --------------------------------------------------------------------------- #
-# Statistiques du dossier de sauvegarde (pour le tableau de bord)
-# --------------------------------------------------------------------------- #
-
-def compute_backup_stats(dest: Path) -> tuple[int, int]:
-    """Parcourt le dossier de sauvegarde et renvoie (nombre de fichiers, taille
-    totale en octets). Purement informatif (aucune écriture) ; peut être lent sur
-    de gros volumes, à appeler depuis un thread d'arrière-plan."""
-    if not dest.exists():
-        return 0, 0
-    count = 0
-    total = 0
-    for root, _dirs, files in os.walk(dest):
-        for name in files:
-            try:
-                total += (Path(root) / name).stat().st_size
-                count += 1
-            except OSError:
-                continue
-    return count, total
+    temporary = CONFIG_FILE.with_name(CONFIG_FILE.name + ".tmp")
+    with open(temporary, "w", encoding="utf-8") as stream:
+        stream.write(json.dumps(config, indent=2, ensure_ascii=False))
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, CONFIG_FILE)
 
 
 def format_size(num_bytes: int) -> str:
     size = float(num_bytes)
     for unit in ("o", "Ko", "Mo", "Go"):
         if size < 1024:
-            return f"{int(size)} {unit}" if unit == "o" else f"{size:.1f} {unit}"
+            return f"{int(size)} {unit}" if unit == "o" else f"{size:.1f} {unit}".replace(".", ",")
         size /= 1024
-    return f"{size:.1f} To"
+    return f"{size:.1f} To".replace(".", ",")
+
+
+def format_duration(seconds: float) -> str:
+    seconds = int(max(0, seconds))
+    if seconds < 60:
+        return f"{seconds} s"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes} min"
+    return f"{minutes // 60} h {minutes % 60:02d}"
 
 
 # --------------------------------------------------------------------------- #
-# Rapport final
+# Rapport de session
 # --------------------------------------------------------------------------- #
 
 def write_report(dest: Path, lines: list[str]) -> Path:
