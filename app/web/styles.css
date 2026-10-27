@@ -198,3 +198,9 @@ html,body{height:100%;overflow:hidden}
   .status-body{padding:12px 0}
   .primary.big{width:100%;font-size:17px}
 }
+/* Navigation en quatre entrées : réglages par catégorie et retour depuis les sous-pages. */
+.cat-settings{display:inline-block;margin-top:6px;padding:2px 0;font-size:13px}
+.dest-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+.dest-actions .secondary{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.back-link{padding:0;margin-bottom:10px;font-size:14px}
+@media(max-width:760px){.dest-actions{grid-template-columns:minmax(0,1fr)}}
