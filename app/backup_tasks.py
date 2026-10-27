@@ -66,6 +66,9 @@ def relaunch_as_admin() -> bool:
     # Version compilée : sys.argv[0] est l'exécutable lui-même, à ne pas repasser en argument.
     args = sys.argv[1:] if getattr(sys, "frozen", False) else sys.argv
     params = subprocess.list2cmdline(args)
+    if getattr(sys, "frozen", False):
+        from app_updates import reset_frozen_environment
+        reset_frozen_environment()
     result = ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
     return result > 32
 

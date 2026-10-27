@@ -3,7 +3,7 @@
 
 #define MyAppName "Sauvegarde PC"
 #ifndef MyAppVersion
-#define MyAppVersion "1.12.0"
+#define MyAppVersion "1.12.1"
 #endif
 #define MyAppPublisher "Sauvegarde PC"
 #define MyAppExeName "SauvegardePC.exe"
@@ -48,4 +48,6 @@ Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+; Lancé via cmd avec PYINSTALLER_RESET_ENVIRONMENT : lors d'une mise à jour intégrée, l'installeur
+; hérite des variables _PYI_* de l'ancienne version, qui empêcheraient la nouvelle de démarrer.
+Filename: "{cmd}"; Parameters: "/c set PYINSTALLER_RESET_ENVIRONMENT=1&& set _PYI_APPLICATION_HOME_DIR=&& set _PYI_ARCHIVE_FILE=&& set _PYI_PARENT_PROCESS_LEVEL=&& start """" ""{app}\{#MyAppExeName}"""; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent runhidden

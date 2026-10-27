@@ -124,6 +124,18 @@ def download_release(release, directory, progress=lambda value: None):
         raise
 
 
+def reset_frozen_environment():
+    """Let programs started from here (installer, elevated copy) launch SauvegardePC.exe cleanly.
+
+    The PyInstaller onefile bootloader stores its own _PYI_* variables in the environment.
+    A new SauvegardePC.exe inheriting them, even through the installer, believes it is the
+    unpacked child of this process and stops with "Security validation failure".
+    """
+    for name in [n for n in os.environ if n.upper().startswith('_PYI_')]:
+        del os.environ[name]
+    os.environ['PYINSTALLER_RESET_ENVIRONMENT'] = '1'
+
+
 def launch_installer(path, checksum):
     if not getattr(sys, 'frozen', False):
         raise RuntimeError('Installez la version compilée pour utiliser la mise à jour intégrée.')
@@ -132,6 +144,7 @@ def launch_installer(path, checksum):
             raise ValueError('L’installeur a été modifié après le téléchargement.')
     # Keep the wizard visible, preserve the installation directory, never force-close work.
     args = ['/NORESTART', '/NOCLOSEAPPLICATIONS', '/DIR='+str(Path(sys.executable).parent)]
+    reset_frozen_environment()
     os.startfile(str(path), 'open', subprocess.list2cmdline(args))
 
 

@@ -84,10 +84,15 @@ class UpdateTests(unittest.TestCase):
             path.write_bytes(self.content)
             with patch.object(updates.sys, 'frozen', True, create=True), \
                  patch.object(updates.sys, 'executable', str(Path(directory)/'installed'/'SauvegardePC.exe')), \
+                 patch.dict(updates.os.environ, {'_PYI_ARCHIVE_FILE': 'old.exe', '_PYI_PARENT_PROCESS_LEVEL': '1'}), \
                  patch.object(updates.os, 'startfile', create=True) as launch:
                 updates.launch_installer(path, self.checksum)
                 self.assertIn('/NOCLOSEAPPLICATIONS', launch.call_args.args[2])
                 self.assertIn('installed', launch.call_args.args[2])
+                # The installer relaunches the new SauvegardePC.exe: it must not inherit this process's
+                # PyInstaller state, or the new version stops with "Security validation failure".
+                self.assertFalse([n for n in updates.os.environ if n.startswith('_PYI_')])
+                self.assertEqual(updates.os.environ['PYINSTALLER_RESET_ENVIRONMENT'], '1')
                 path.write_bytes(b'changed')
                 with self.assertRaises(ValueError):
                     updates.launch_installer(path, self.checksum)
