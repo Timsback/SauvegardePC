@@ -133,11 +133,10 @@ const tools=[
 ];
 function render(s){state=s;const dest=s.destination||'';
   setText('#drive-title',dest?dest.split(/[\\/]/).filter(Boolean).pop()||dest:'Aucune destination choisie');setText('#drive-subtitle',dest?(s.destination_exists?'Dossier disponible':'Dossier inaccessible (disque débranché ?)'):'Sélectionnez un disque ou un dossier');setText('#drive-path',dest||'—');setText('#drive-status',s.destination_exists?'Disponible':dest?'À vérifier':'À choisir');$('#drive-status').classList.toggle('missing',!s.destination_exists);setText('#drive-date',formatDate(s.last_backup_at));setText('#drive-free',s.capacity_free||'—');$('#capacity-fill').style.width=(s.capacity_percent||0)+'%';setText('#destination-page-path',dest||'Aucune destination choisie.');setText('#last-backup',s.last_backup_at?'Dernière sauvegarde : '+formatDate(s.last_backup_at):'Aucune sauvegarde enregistrée');setText('#status-title',s.busy?s.task+' en cours':s.last_backup_at?'Sauvegarde effectuée':'Prêt à sauvegarder');setText('#status-detail',s.busy?s.progress_label:dest?'Vos données sont prêtes pour une nouvelle sauvegarde.':'Choisissez une destination pour commencer.');setText('#status-symbol',s.busy?'↻':s.last_backup_at?'✓':'＋');$('#status-ring').classList.toggle('waiting',!s.last_backup_at);
-  setText('#task-label',s.busy?s.task+' · '+s.progress_label:'Aucune opération en cours');setText('#progress-value',s.busy?s.progress+' %':'');$('#progress-fill').style.width=s.busy?s.progress+'%':'0%';setText('#progress-detail',s.busy?s.progress_detail||'':'');setText('#activity-indicator',s.busy?'· en cours':'');
   const cancel=$('#cancel-operation');cancel.hidden=!s.cancelable;cancel.disabled=s.cancel_requested;setText('#cancel-operation',s.cancel_requested?'Annulation…':'Annuler');
   document.querySelectorAll('[data-action^="backup-"],[data-action="estimate"],[data-action="restore-full"]').forEach(b=>b.disabled=s.busy);
   setText('#admin-state',s.admin?'Droits administrateur actifs.':'Droits administrateur requis pour les exports Wi-Fi et pilotes, et pour installer des pilotes.');setText('#settings-admin',s.admin?'L’application fonctionne avec les droits administrateur.':'L’application fonctionne sans droits administrateur : Wi-Fi et pilotes sont ignorés.');document.querySelectorAll('[data-admin-button]').forEach(b=>{b.hidden=s.admin;b.disabled=s.busy});
-  if(s.busy)$('#activity').classList.add('open');
+  renderActivity(s);
   renderDestination(s);renderEstimate(s);renderSettings(s);renderVault(s);renderRestore(s);
   setHTML('#category-grid',cats.map(c=>`<label class="glass category ${c.tone}"><span class="cat-icon">${cardIcons[c.id]}</span><span class="cat-copy"><strong>${c.title}</strong><span>${c.desc}</span><small>${esc(categoryDetail(c,s))}</small><button type="button" class="text-button cat-settings" data-page="${c.id}">Régler &nbsp;→</button></span><input class="cat-check" type="checkbox" data-category="${c.id}" ${s.selected_categories.includes(c.id)?'checked':''} aria-label="Inclure ${c.title}"></label>`).join(''));
   setHTML('#folder-choices',['Bureau','Documents','Images','Téléchargements','Vidéos','Musique'].map(n=>`<label class="choice"><input type="checkbox" data-folder="${n}" ${s.selected_folders.includes(n)?'checked':''}> ${n}</label>`).join(''));
@@ -147,7 +146,6 @@ function render(s){state=s;const dest=s.destination||'';
   setHTML('#checklist',checklist);
   renderSoftwareState(s);
   renderUpdates(s);
-  const log=$('#log'),text=s.events.map(e=>e.message).join('\n');if(log.textContent!==text){const atBottom=log.scrollHeight-log.scrollTop-log.clientHeight<30;log.textContent=text;if(atBottom)log.scrollTop=log.scrollHeight}
 }
 function renderDestination(s){
   const info=s.destination_info||{};
@@ -243,8 +241,140 @@ document.addEventListener('change',async e=>{const t=e.target;let s=null;
   if(s)render(s);else if(state)render(state)});
 $('#exclusion-input').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();onAction('add-exclusion')}});
 $('#cancel-operation').addEventListener('click',async()=>{const r=await invoke('cancel_operation');if(r&&!r.ok)notice(r.error,true);else await refresh()});
-$('#toggle-log').addEventListener('click',()=>{const el=$('#log');el.classList.toggle('open');$('#toggle-log').textContent=el.classList.contains('open')?'Masquer le journal':'Afficher le journal'});
-$('#activity-toggle').addEventListener('click',()=>$('#activity').classList.toggle('open'));
+
+// ---------------------------------------------------------------------------
+// Journal d'activité : tiroir latéral, une chronologie par opération, découpée en étapes
+// (les lignes « ━━ TITRE ━━ » du moteur), filtrable et consultable pendant l'opération.
+// ---------------------------------------------------------------------------
+const logView={filter:'all',query:'',technical:false,follow:true,toggled:new Set(),drawn:'',wasBusy:false};
+const ENTRY_ICONS={success:'✓',warning:'!',step:'›',info:'i',note:'–',output:'',plain:'•'};
+function classify(e){
+  if(e.kind==='start')return 'start';
+  if(e.kind==='done')return 'done';
+  if(e.kind==='warning')return 'result-warning';
+  if(e.kind==='error')return 'result-error';
+  const m=String(e.message).trim();
+  if(/^━━.*━━$/.test(m))return 'section';
+  if(m.startsWith('│'))return 'output';
+  if(m.startsWith('✓'))return 'success';
+  if(m.startsWith('⚠'))return 'warning';
+  if(m.startsWith('→'))return 'step';
+  if(m.startsWith('ℹ'))return 'info';
+  if(m.startsWith('—'))return 'note';
+  return 'plain';
+}
+function buildLog(events){
+  const ops=[];let op=null,section=null;
+  const newOp=(title,at)=>{op={key:`${at}|${title}|${ops.length}`,title,at,sections:[],result:null};ops.push(op);section=null};
+  for(const e of events){
+    const type=classify(e);
+    if(type==='start'){newOp(e.message,e.at);continue}
+    if(!op)newOp('Journal de la session',e.at);
+    if(type==='done'||type.startsWith('result')){op.result={type:type==='done'?'done':type.slice(7),message:e.message,at:e.at};continue}
+    if(type==='section'||!section){section={key:`${op.key}|${op.sections.length}`,title:type==='section'?e.message.replace(/━/g,'').trim():'',at:e.at,entries:[]};op.sections.push(section);if(type==='section')continue}
+    const text=type==='output'?String(e.message).replace(/^ *│ ?/gm,''):String(e.message).trim().replace(/^[✓⚠→ℹ—]\s*/,'');
+    section.entries.push({type,text,at:e.at});
+  }
+  return ops;
+}
+const isProblem=entry=>entry.type==='warning';
+function visible(entry){
+  if(entry.type==='output'&&!logView.technical&&!logView.query)return false;
+  if(logView.filter==='steps'&&!['success','step','info','warning'].includes(entry.type))return false;
+  if(logView.filter==='problems'&&!isProblem(entry))return false;
+  return !logView.query||entry.text.toLocaleLowerCase().includes(logView.query);
+}
+function highlight(text){
+  const safe=esc(text);if(!logView.query)return safe;
+  const q=esc(logView.query).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  return safe.replace(new RegExp(q,'gi'),m=>`<mark>${m}</mark>`);
+}
+// Earlier operations start folded, the current one unfolded; a click flips that default.
+const expanded=(key,byDefault)=>logView.toggled.has(key)?!byDefault:byDefault;
+function renderEntries(entries){
+  let html='',hidden=0;
+  for(const entry of entries){
+    if(!visible(entry)){if(entry.type==='output'&&!logView.technical&&logView.filter==='all')hidden++;continue}
+    html+=`<li class="entry entry-${entry.type}"><span class="entry-icon" aria-hidden="true">${ENTRY_ICONS[entry.type]||''}</span><span class="entry-text">${highlight(entry.text)}</span><time>${esc(entry.at||'')}</time></li>`;
+  }
+  if(hidden)html+=`<li class="entry entry-hidden"><span class="entry-icon"></span><button type="button" data-show-technical>${hidden} bloc(s) de détails techniques masqué(s) · afficher</button></li>`;
+  return html;
+}
+function renderTimeline(ops){
+  const filtering=logView.filter!=='all'||!!logView.query;
+  const html=ops.map((op,i)=>{
+    const opOpen=filtering||expanded(op.key,i===ops.length-1);
+    const sections=op.sections.map(section=>{
+      const entries=renderEntries(section.entries);
+      if(filtering&&!entries&&!(logView.query&&section.title.toLocaleLowerCase().includes(logView.query)))return '';
+      const warnings=section.entries.filter(isProblem).length;
+      if(!section.title)return `<li class="log-section"><ol>${entries}</ol></li>`;
+      const open=filtering||expanded(section.key,true);
+      return `<li class="log-section"><button type="button" class="section-head" data-log-toggle="${esc(section.key)}" aria-expanded="${open}"><span class="chevron" aria-hidden="true">▾</span>${highlight(section.title)}${warnings?`<span class="section-badge warn">${warnings} à vérifier</span>`:''}<time>${esc(section.at||'')}</time></button>${open?`<ol>${entries}</ol>`:''}</li>`;
+    }).join('');
+    if(filtering&&!sections&&!op.result)return '';
+    const result=op.result?`<div class="op-result ${op.result.type}" role="status"><span aria-hidden="true">${{done:'✓',warning:'!',error:'✕'}[op.result.type]}</span><span>${highlight(op.result.message)}</span></div>`:'';
+    return `<li class="log-op"><button type="button" class="op-head" data-log-toggle="${esc(op.key)}" aria-expanded="${opOpen}"><span class="chevron" aria-hidden="true">▾</span>${esc(op.title)}<time>${esc(op.at||'')}</time></button>${opOpen?`<ol class="op-body">${sections}</ol>${result}`:result}</li>`;
+  }).join('');
+  return html||`<li class="log-empty">${filtering?'Aucune ligne ne correspond.':'Le journal se remplit dès qu’une opération démarre.'}</li>`;
+}
+function renderActivity(s){
+  const ops=buildLog(s.events||[]),last=ops[ops.length-1],result=last?.result;
+  const state=s.busy?'busy':result?result.type:'idle';
+  // Progress header and the pill in the masthead.
+  const percent=s.busy?Math.max(0,Math.min(100,s.progress||0)):result?100:0;
+  setText('#task-label',s.busy?s.task:result?(result.type==='done'?`${last.title} terminé`:result.type==='warning'?`${last.title} : points à vérifier`:`${last.title} : échec`):'Aucune opération en cours');
+  setText('#progress-detail',s.busy?[s.progress_label,s.progress_detail].filter(Boolean).join(' · '):result?`Fin à ${result.at}`:'');
+  setText('#progress-value',s.busy||result?percent+' %':'');
+  $('#ring-fill').style.strokeDashoffset=String(138.2*(1-percent/100));
+  $('#progress-fill').style.width=(s.busy?percent:0)+'%';
+  $('#progress-bar').setAttribute('aria-valuenow',String(percent));
+  $('#progress-area').dataset.state=state;
+  setText('#activity-status',s.busy?'Opération en cours · le journal se met à jour en direct':result?`Dernière opération à ${last.at}`:'Aucune opération en cours');
+  const pill=$('#activity-pill');pill.dataset.state=state;
+  setText('#activity-pill-text',s.busy?`${s.task} · ${percent} %`:'Activité');
+  const cancel=$('#cancel-operation');cancel.hidden=!s.cancelable;cancel.disabled=s.cancel_requested;setText('#cancel-operation',s.cancel_requested?'Annulation…':'Annuler');
+  // An operation that starts opens the journal once; the user may close it while it runs.
+  if(s.busy&&!logView.wasBusy)openActivity(true);
+  logView.wasBusy=s.busy;
+  const problems=ops.reduce((n,op)=>n+op.sections.reduce((m,sec)=>m+sec.entries.filter(isProblem).length,0),0);
+  setText('#problem-count',problems);$('#problem-count').classList.toggle('has',problems>0);
+  setText('#log-summary',`${(s.events||[]).length} ligne(s) · ${ops.length} opération(s)`);
+  const signature=`${s.event_seq}|${logView.filter}|${logView.query}|${logView.technical}|${[...logView.toggled].join(',')}`;
+  if(signature===logView.drawn)return;
+  logView.drawn=signature;
+  const scroller=$('#log-scroll');
+  $('#log').innerHTML=renderTimeline(ops);
+  if(logView.follow)scroller.scrollTop=scroller.scrollHeight;
+  else $('#log-resume').hidden=false;
+}
+function openActivity(open){
+  const drawer=$('#activity'),show=open??!drawer.classList.contains('open');
+  drawer.classList.toggle('open',show);$('#activity-pill').setAttribute('aria-expanded',String(show));
+  if(show){logView.follow=true;$('#log-resume').hidden=true;const scroller=$('#log-scroll');scroller.scrollTop=scroller.scrollHeight}
+}
+$('#activity-pill').addEventListener('click',()=>{openActivity();if($('#activity').classList.contains('open'))$('#activity').focus({preventScroll:true})});
+$('#activity-toggle').addEventListener('click',()=>openActivity(true));
+$('#activity-close').addEventListener('click',()=>{openActivity(false);$('#activity-pill').focus()});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('#activity').classList.contains('open')&&!document.querySelector('dialog[open]')){openActivity(false);$('#activity-pill').focus()}});
+$('#log-scroll').addEventListener('scroll',e=>{const el=e.currentTarget,atBottom=el.scrollHeight-el.scrollTop-el.clientHeight<40;logView.follow=atBottom;if(atBottom)$('#log-resume').hidden=true});
+$('#log-resume').addEventListener('click',()=>{const el=$('#log-scroll');logView.follow=true;el.scrollTop=el.scrollHeight;$('#log-resume').hidden=true});
+document.querySelectorAll('[data-log-filter]').forEach(button=>button.addEventListener('click',()=>{
+  logView.filter=button.dataset.logFilter;
+  document.querySelectorAll('[data-log-filter]').forEach(b=>{b.classList.toggle('active',b===button);b.setAttribute('aria-pressed',String(b===button))});
+  if(state)renderActivity(state);
+}));
+$('#log-search').addEventListener('input',e=>{logView.query=e.target.value.trim().toLocaleLowerCase();if(state)renderActivity(state)});
+$('#log-technical').addEventListener('change',e=>{logView.technical=e.target.checked;if(state)renderActivity(state)});
+$('#log').addEventListener('click',e=>{
+  const toggle=e.target.closest('[data-log-toggle]');
+  if(toggle){const key=toggle.dataset.logToggle;logView.toggled.has(key)?logView.toggled.delete(key):logView.toggled.add(key);logView.follow=false;if(state)renderActivity(state);return}
+  if(e.target.closest('[data-show-technical]')){logView.technical=true;$('#log-technical').checked=true;if(state)renderActivity(state)}
+});
+$('#log-copy').addEventListener('click',async()=>{
+  const text=(state?.events||[]).map(e=>`[${e.at||''}] ${e.message}`).join('\n');
+  try{await navigator.clipboard.writeText(text);notice('Journal copié dans le presse-papiers.')}catch(e){notice('Copie impossible.',true)}
+});
 window.addEventListener('pywebviewready',()=>{refresh();poll=setInterval(refresh,1100);invoke('check_updates',false);setInterval(()=>invoke('check_updates',false),6*60*60*1000)});
 document.querySelectorAll('.nav').forEach(button=>{button.querySelector('span').innerHTML=navIcons[button.dataset.page]||''});
 $('#tools-grid').innerHTML=tools.map(t=>`<button class="glass category hub-card ${t.tone}" data-page="${t.page}"><span class="cat-icon">${navIcons[t.icon]}</span><span class="cat-copy"><strong>${t.title}</strong><span>${t.desc}</span></span><span class="hub-arrow">→</span></button>`).join('');
