@@ -10,6 +10,11 @@ Le plus simple : télécharge puis exécute `SauvegardePC-Setup.exe` depuis [la 
 installeur Windows (assistant, choix du dossier, raccourcis, désinstallation
 propre depuis Paramètres → Applications).
 
+**Signature de code :** Free code signing provided by [SignPath.io](https://about.signpath.io/),
+certificate by [SignPath Foundation](https://signpath.org/). La signature des
+installeurs via SignPath Foundation est en cours de mise en place ; voir
+[CODE_SIGNING.md](CODE_SIGNING.md).
+
 En développement, double-clique sur [`Lancer.bat`](Lancer.bat) — nécessite
 Python et `pywebview` installés (`pip install pywebview`). Ou en ligne
 de commande :
