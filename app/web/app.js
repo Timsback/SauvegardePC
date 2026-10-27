@@ -45,6 +45,59 @@ $('#confirmation-dialog').addEventListener('keydown',e=>{
   if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus()}
   else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus()}
 });
+// Password prompts for the protection of licences and Wi-Fi. `validate` calls the API while the
+// dialog stays open, so a wrong password can be retyped; the value is never kept in the page.
+function promptSecret({title,message,label='Mot de passe',confirm=false,acceptLabel='Continuer',validate}){
+  return new Promise(resolve=>{
+    const dialog=$('#secret-dialog'),input=$('#secret-input'),again=$('#secret-confirm'),error=$('#secret-error'),accept=$('#secret-accept');
+    $('#secret-title').textContent=title;$('#secret-message').textContent=message;$('#secret-label').textContent=label;
+    $('#secret-confirm-field').hidden=!confirm;accept.textContent=acceptLabel;accept.disabled=false;
+    input.value='';again.value='';error.textContent='';
+    let done=false;
+    const finish=value=>{if(done)return;done=true;$('#secret-form').removeEventListener('submit',submit);$('#secret-cancel').removeEventListener('click',cancel);dialog.removeEventListener('cancel',cancel);input.value='';again.value='';dialog.close();resolve(value)};
+    const submit=async e=>{e.preventDefault();const value=input.value;
+      if(confirm&&value!==again.value){error.textContent='Les deux mots de passe sont différents.';again.select();return}
+      if(validate){accept.disabled=true;const problem=await validate(value);accept.disabled=false;if(problem){error.textContent=problem;input.select();return}}
+      finish(value)};
+    const cancel=e=>{e.preventDefault();finish(null)};
+    $('#secret-form').addEventListener('submit',submit);$('#secret-cancel').addEventListener('click',cancel);dialog.addEventListener('cancel',cancel);
+    dialog.showModal();input.focus();
+  });
+}
+function showRecovery(code){
+  return new Promise(resolve=>{
+    const dialog=$('#recovery-dialog');
+    $('#recovery-code').textContent=code;$('#recovery-noted').checked=false;$('#recovery-done').disabled=true;
+    const done=()=>{$('#recovery-done').removeEventListener('click',done);$('#recovery-code').textContent='';dialog.close();resolve()};
+    $('#recovery-done').addEventListener('click',done);
+    dialog.showModal();
+  });
+}
+$('#recovery-noted').addEventListener('change',e=>{$('#recovery-done').disabled=!e.target.checked});
+$('#recovery-copy').addEventListener('click',async()=>{try{await navigator.clipboard.writeText($('#recovery-code').textContent);notice('Clé de secours copiée. Collez-la en lieu sûr, puis videz le presse-papiers.')}catch(e){notice('Copie impossible : notez la clé à la main.',true)}});
+// The recovery dialog only closes once the code is noted.
+$('#recovery-dialog').addEventListener('cancel',e=>e.preventDefault());
+async function setupVault(){
+  let recovery='';
+  const created=await promptSecret({title:'Créer le mot de passe de protection',message:'Il chiffre vos clés de licence et mots de passe Wi-Fi dans chaque sauvegarde, y compris les sauvegardes automatiques. Il sera demandé pour les restaurer. Au moins 8 caractères.',confirm:true,acceptLabel:'Créer',
+    validate:async value=>{const r=await invoke('setup_vault',value);if(!r)return 'Erreur inattendue.';if(!r.ok)return r.error;recovery=r.recovery;return ''}});
+  if(created===null)return false;
+  await showRecovery(recovery);await refresh();notice('Protection activée : licences et Wi-Fi seront chiffrés dans chaque sauvegarde.');return true;
+}
+async function changeVault(){
+  const secret=await promptSecret({title:'Changer le mot de passe',message:'Saisissez le mot de passe actuel, ou votre clé de secours si vous l’avez oublié.',label:'Mot de passe actuel ou clé de secours'});
+  if(secret===null)return;
+  const changed=await promptSecret({title:'Nouveau mot de passe',message:'Au moins 8 caractères. Votre clé de secours reste valable.',confirm:true,acceptLabel:'Changer',
+    validate:async value=>{const r=await invoke('change_vault_password',secret,value);return !r?'Erreur inattendue.':r.ok?'':r.error}});
+  if(changed!==null)notice('Mot de passe de protection modifié.');
+}
+async function unlockRestore(){
+  if(state?.restore_unlocked)return true;
+  const value=await promptSecret({title:'Mot de passe de protection',message:'Cette sauvegarde contient des données chiffrées (licences, mots de passe Wi-Fi). Saisissez le mot de passe choisi lors de la sauvegarde, ou votre clé de secours.',label:'Mot de passe ou clé de secours',acceptLabel:'Déverrouiller',
+    validate:async value=>{const r=await invoke('unlock_restore',value);return !r?'Erreur inattendue.':r.ok?'':r.error}});
+  if(value===null)return false;
+  await refresh();return true;
+}
 $('#confirmation-close').addEventListener('click',()=>closeConfirmation(false));
 $('#confirmation-cancel').addEventListener('click',()=>closeConfirmation(false));
 $('#confirmation-accept').addEventListener('click',()=>closeConfirmation(true));
@@ -64,7 +117,7 @@ function setValue(sel,value){const el=$(sel);if(el&&document.activeElement!==el&
 function setChecked(sel,value){const el=$(sel);if(el&&el.checked!==Boolean(value))el.checked=Boolean(value)}
 const restoreLabels={files:'Fichiers personnels',browsers:'Navigateurs (profils complets)',email:'Messagerie (Thunderbird, Outlook .pst, signatures)',programs:'Programmes (réinstallation winget, Internet requis)',wifi:'Profils Wi-Fi',drivers:'Pilotes (administrateur requis)'};
 let restoreSelection=null,restoreSelectionFor='';
-function categoryDetail(c,s){const size=s.estimate?.per_category?.[c.id];if(size&&['files','browsers','email'].includes(c.id))return `${size.size} · ${size.files} fichiers`;switch(c.id){case 'files':return `${s.selected_folders.length} dossiers standards sélectionnés`;case 'browsers':return `${Object.values(s.detected_browsers).filter(Boolean).length} navigateur(s) détecté(s)`;case 'licenses':return 'Clé Windows et licences sauvegardées';case 'programs':return 'Inventaire des logiciels';case 'email':return 'Outlook et Thunderbird';case 'wifi':return s.admin?'Export disponible':'Droits administrateur requis';default:return ''}}
+function categoryDetail(c,s){const size=s.estimate?.per_category?.[c.id];if(size&&['files','browsers','email'].includes(c.id))return `${size.size} · ${size.files} fichiers`;switch(c.id){case 'files':return `${s.selected_folders.length} dossiers standards sélectionnés`;case 'browsers':return `${Object.values(s.detected_browsers).filter(Boolean).length} navigateur(s) détecté(s)`;case 'licenses':return s.vault?.configured?'Clé Windows et licences, chiffrées':'Mot de passe de protection à créer';case 'programs':return 'Inventaire des logiciels';case 'email':return 'Outlook et Thunderbird';case 'wifi':return !s.vault?.configured?'Mot de passe de protection à créer':s.admin?'Mots de passe Wi-Fi chiffrés':'Droits administrateur requis';default:return ''}}
 function notice(message,error=false){const el=$('#notice');el.textContent=message;el.className='show'+(error?' error':'');clearTimeout(noticeTimer);noticeTimer=setTimeout(()=>el.className='',6000)}
 async function invoke(method,...args){try{return await api()[method](...args)}catch(e){notice(String(e),true);return null}}
 // Four entries in the sidebar; every other page is a sub-page opened from one of them.
@@ -85,7 +138,7 @@ function render(s){state=s;const dest=s.destination||'';
   document.querySelectorAll('[data-action^="backup-"],[data-action="estimate"],[data-action="restore-full"]').forEach(b=>b.disabled=s.busy);
   setText('#admin-state',s.admin?'Droits administrateur actifs.':'Droits administrateur requis pour les exports Wi-Fi et pilotes, et pour installer des pilotes.');setText('#settings-admin',s.admin?'L’application fonctionne avec les droits administrateur.':'L’application fonctionne sans droits administrateur : Wi-Fi et pilotes sont ignorés.');document.querySelectorAll('[data-admin-button]').forEach(b=>{b.hidden=s.admin;b.disabled=s.busy});
   if(s.busy)$('#activity').classList.add('open');
-  renderDestination(s);renderEstimate(s);renderSettings(s);renderRestore(s);
+  renderDestination(s);renderEstimate(s);renderSettings(s);renderVault(s);renderRestore(s);
   setHTML('#category-grid',cats.map(c=>`<label class="glass category ${c.tone}"><span class="cat-icon">${cardIcons[c.id]}</span><span class="cat-copy"><strong>${c.title}</strong><span>${c.desc}</span><small>${esc(categoryDetail(c,s))}</small><button type="button" class="text-button cat-settings" data-page="${c.id}">Régler &nbsp;→</button></span><input class="cat-check" type="checkbox" data-category="${c.id}" ${s.selected_categories.includes(c.id)?'checked':''} aria-label="Inclure ${c.title}"></label>`).join(''));
   setHTML('#folder-choices',['Bureau','Documents','Images','Téléchargements','Vidéos','Musique'].map(n=>`<label class="choice"><input type="checkbox" data-folder="${n}" ${s.selected_folders.includes(n)?'checked':''}> ${n}</label>`).join(''));
   setHTML('#custom-folders',s.custom_folders.length?s.custom_folders.map(p=>`<div class="item"><span>${esc(p)}</span><button class="secondary" data-remove-folder="${esc(p)}">Retirer</button></div>`).join(''):'<p class="hint">Aucun dossier personnalisé ajouté.</p>');
@@ -128,27 +181,48 @@ function renderRestore(s){
   $('#restore-version-field').hidden=s.restore_versions.length<2;
   setHTML('#restore-version',s.restore_versions.map(v=>`<option value="${esc(v.folder)}" ${v.folder===s.restore_version?'selected':''}>${esc(v.legacy?'Ancienne sauvegarde':formatDate(v.created)+' · '+v.computer+' · '+v.status_label)}</option>`).join(''));
   if(restoreSelectionFor!==s.restore_version){restoreSelectionFor=s.restore_version;restoreSelection=new Set(s.restore_categories.filter(c=>!['drivers','programs'].includes(c)))}
-  setHTML('#restore-categories',s.restore_version?(s.restore_categories.length?s.restore_categories.map(c=>`<label class="choice"><input type="checkbox" data-restore-category="${c}" ${restoreSelection.has(c)?'checked':''}> ${esc(restoreLabels[c]||c)}</label>`).join(''):'<p class="hint">Rien à restaurer dans ce dossier.</p>'):'<p class="hint">Choisissez d’abord un dossier de sauvegarde.</p>');
-  $('#open-licenses').hidden=!s.restore_version;
+  setHTML('#restore-categories',s.restore_version?(s.restore_categories.length?s.restore_categories.map(c=>`<label class="choice"><input type="checkbox" data-restore-category="${c}" ${restoreSelection.has(c)?'checked':''}> ${esc(restoreLabels[c]||c)}${c==='wifi'&&s.restore_sensitive?.wifi==='encrypted'?' · mot de passe demandé':''}</label>`).join(''):'<p class="hint">Rien à restaurer dans ce dossier.</p>'):'<p class="hint">Choisissez d’abord un dossier de sauvegarde.</p>');
+  $('#open-licenses').hidden=!s.restore_sensitive?.licenses;
+  if(shownLicensesFor!==s.restore_version){shownLicensesFor=s.restore_version;$('#restore-licenses').hidden=true;$('#restore-license-list').textContent=''}
   setHTML('#restore-list',s.restore_browsers.map(n=>`<div class="item"><span>${esc(n)}</span><button class="secondary" data-restore="${esc(n)}" ${s.busy?'disabled':''}>Restaurer</button></div>`).join('')||(s.restore_source?'<p class="hint">Aucun profil de navigateur trouvé dans ce dossier.</p>':''));
 }
 async function refresh(){const result=await invoke('get_state');if(result)render(result)}
 async function loadLicenses(){try{licenses=await api().get_licenses();renderLicenses()}catch(e){licenses=[];renderLicenses()}}
 function renderLicenses(){$('#license-list').innerHTML=licenses.length?licenses.map((l,i)=>`<div class="item"><span><strong>${esc(l.logiciel)}</strong> &nbsp; <span class="hint">${esc(l.cle)}</span></span><button class="secondary" data-license-remove="${i}">Retirer</button></div>`).join(''):'<p class="hint">Aucune licence enregistrée dans la destination actuelle.</p>'}
-async function start(category){if(state?.destination_info?.same_disk&&!await confirmAction({title:'Destination sur le disque de Windows',message:'La destination est sur le même disque physique que Windows. Une panne de ce disque ou sa réinitialisation pendant la réinstallation effacerait aussi la sauvegarde.\n\nContinuer quand même ?',acceptLabel:'Sauvegarder quand même'}))return;const result=await invoke('start_backup',category);if(result&&!result.ok)notice(result.error,true);else if(result){notice('Opération démarrée. Suivez sa progression dans Activité.');await refresh()}}
+function renderVault(s){
+  const v=s.vault||{},clear=v.clear_folders||0;
+  setText('#vault-status',v.configured?'Activée : licences et mots de passe Wi-Fi sont chiffrés dans chaque sauvegarde.':'À créer : tant qu’il n’existe pas, les licences et le Wi-Fi ne sont pas sauvegardés.');
+  $('#vault-setup').hidden=!!v.configured;$('#vault-change').hidden=!v.configured;
+  setText('#vault-clear',clear?`${clear} sauvegarde(s) de cette destination contiennent encore des licences ou des mots de passe Wi-Fi en clair (versions antérieures à la protection).${v.configured?'':' Créez d’abord le mot de passe pour les protéger.'}`:'');
+  $('#vault-clear').hidden=!clear;$('#vault-protect-old').hidden=!clear||!v.configured;$('#vault-protect-old').disabled=s.busy;
+}
+let shownLicensesFor='';
+async function showSavedLicenses(){
+  if(state?.restore_sensitive?.licenses==='encrypted'&&!await unlockRestore())return;
+  const r=await invoke('read_restore_licenses');if(!r)return;if(!r.ok){notice(r.error,true);return}
+  setHTML('#restore-license-list',r.licenses.length?r.licenses.map(l=>`<div class="item"><span><strong>${esc(l.logiciel)}</strong> &nbsp; <span class="hint">${esc(l.cle)}</span></span></div>`).join(''):'<p class="hint">Aucune licence dans cette sauvegarde.</p>');
+  $('#restore-licenses').hidden=false;
+}
+async function start(category){if(state?.destination_info?.same_disk&&!await confirmAction({title:'Destination sur le disque de Windows',message:'La destination est sur le même disque physique que Windows. Une panne de ce disque ou sa réinitialisation pendant la réinstallation effacerait aussi la sauvegarde.\n\nContinuer quand même ?',acceptLabel:'Sauvegarder quand même'}))return;let result=await invoke('start_backup',category);if(result?.code==='vault_required'){if(!await confirmAction({title:'Protégez d’abord vos données sensibles',message:'Les licences et les mots de passe Wi-Fi ne sont sauvegardés que chiffrés. Créez un mot de passe de protection : il ne sera demandé que pour les restaurer.\n\nVous pouvez aussi décocher Licences et Wi-Fi.',acceptLabel:'Créer le mot de passe'})||!await setupVault())return;result=await invoke('start_backup',category)}if(result&&!result.ok)notice(result.error,true);else if(result){notice('Opération démarrée. Suivez sa progression dans Activité.');await refresh()}}
 async function onAction(action){if(action==='software-list'){await loadSoftware();return}if(action==='software-backup'){if(await confirmAction({title:state?.software_plan?.program?.name?`Sauvegarder ${state.software_plan.program.name} ?`:'Sauvegarder le logiciel ?',message:'Fermez le logiciel avant de continuer.\n\nLes fichiers et paramètres affichés seront copiés dans votre dossier de sauvegarde, avec l’installeur si vous en avez ajouté un.',acceptLabel:'Sauvegarder'}))await softwareOperation('backup_software');return}if(action==='choose-destination'||action==='choose-restore'||action==='add-folder'){const method=({'choose-destination':'choose_destination','choose-restore':'choose_restore_source','add-folder':'add_custom_folder'})[action];const result=await invoke(method);if(result)render(result);return}
   if(action.startsWith('backup-')){await start(action.substring(7));return}
   if(action==='windows-key'){notice('Recherche de la clé Windows…');const key=await invoke('read_windows_key');$('#windows-key-result').textContent=key||'Aucune clé OEM trouvée. Une licence numérique liée au compte Microsoft est possible.';return}
   if(action==='add-license'){const name=$('#license-name').value.trim(),key=$('#license-key').value.trim();if(!name||!key){notice('Saisissez un nom et une clé.',true);return}licenses.push({logiciel:name,cle:key});$('#license-name').value='';$('#license-key').value='';renderLicenses();notice('Licence ajoutée à la liste. Cliquez sur Enregistrer les licences.');return}
-  if(action==='save-licenses'){const result=await invoke('save_licenses',licenses);if(result){licenses=result;notice('Licences enregistrées dans la destination.')}return}
+  if(action==='save-licenses'){const result=await invoke('save_licenses',licenses);if(result){licenses=result;notice('Licences enregistrées sur ce PC.')}return}
   if(action==='write-report'){const result=await invoke('write_report');if(result)notice('Rapport créé : '+result);return}
   if(action==='estimate'){await operation('estimate_backup','Estimation démarrée : analyse des fichiers sélectionnés…');return}
   if(action==='add-exclusion'){const input=$('#exclusion-input');const s=await invoke('add_exclusion',input.value);if(s){input.value='';render(s)}return}
   if(action==='relaunch-admin'){if(await confirmAction({title:'Relancer en administrateur ?',message:'L’application va se fermer puis se rouvrir avec les droits administrateur après confirmation de Windows.',acceptLabel:'Relancer'})){const r=await invoke('relaunch_admin');if(r&&!r.ok)notice(r.error,true)}return}
-  if(action==='open-licenses'){const r=await invoke('open_restore_licenses');if(r&&!r.ok)notice(r.error,true);return}
+  if(action==='open-licenses'){await showSavedLicenses();return}
+  if(action==='import-licenses'){const r=await invoke('import_restore_licenses');if(r&&!r.ok)notice(r.error,true);else if(r)notice(`${r.added} licence(s) ajoutée(s) à la liste de ce PC.`);return}
+  if(action==='vault-setup'){await setupVault();return}
+  if(action==='vault-change'){await changeVault();return}
+  if(action==='vault-protect-old'){if(await confirmAction({title:'Protéger les anciennes sauvegardes ?',message:'Les licences et profils Wi-Fi en clair de cette destination seront chiffrés avec votre mot de passe de protection, puis les copies en clair seront effacées.\n\nSur une clé USB ou un SSD, des traces des anciens fichiers peuvent subsister sur le support.',acceptLabel:'Protéger'}))await operation('protect_old_backups','Protection des anciennes sauvegardes démarrée.');return}
   if(action==='restore-full'){const chosen=[...(restoreSelection||[])].filter(c=>state.restore_categories.includes(c));if(!chosen.length){notice('Cochez au moins un élément à restaurer.',true);return}
     const message=`Éléments : ${chosen.map(c=>restoreLabels[c]).join(', ')}.\n\nLes fichiers différents déjà présents sur ce PC sont conservés sous un autre nom, rien n’est supprimé. Fermez les navigateurs et la messagerie avant de continuer.${chosen.includes('programs')?'\n\nLa réinstallation des programmes peut durer longtemps et demander des confirmations Windows.':''}`;
-    if(await confirmAction({title:'Restaurer cette sauvegarde sur ce PC ?',message,acceptLabel:'Restaurer'}))await operation('restore_full','Restauration démarrée. Suivez sa progression dans Activité.',chosen);return}
+    if(!await confirmAction({title:'Restaurer cette sauvegarde sur ce PC ?',message,acceptLabel:'Restaurer'}))return;
+    if(chosen.includes('wifi')&&state.restore_sensitive?.wifi==='encrypted'&&!await unlockRestore())return;
+    await operation('restore_full','Restauration démarrée. Suivez sa progression dans Activité.',chosen);return}
 }
 async function operation(method,started,...args){const result=await invoke(method,...args);if(result&&!result.ok)notice(result.error,true);else if(result){notice(started);await refresh()}}
 document.addEventListener('click',async e=>{const page=e.target.closest('[data-page]');if(page){e.preventDefault();showPage(page.dataset.page);return}if(e.target.closest('[data-back]')){showPage(currentMain);return}const action=e.target.closest('[data-action]');if(action){await onAction(action.dataset.action);return}const remove=e.target.closest('[data-remove-folder]');if(remove){const result=await invoke('remove_custom_folder',remove.dataset.removeFolder);if(result)render(result);return}const restore=e.target.closest('[data-restore]');if(restore){const browser=restore.dataset.restore;if(!await confirmAction({title:'Restaurer '+browser+' ?',message:'Fermez '+browser+' avant de restaurer son profil.',acceptLabel:'Restaurer'}))return;const result=await invoke('restore_browser',browser);if(result&&!result.ok)notice(result.error,true);else notice('Restauration démarrée.');return}const lic=e.target.closest('[data-license-remove]');if(lic){licenses.splice(Number(lic.dataset.licenseRemove),1);renderLicenses();notice('Licence retirée de la liste. Enregistrez pour appliquer.');return}

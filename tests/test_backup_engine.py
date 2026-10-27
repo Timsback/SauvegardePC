@@ -12,6 +12,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'app'))
 import backup_engine as engine
 import backup_tasks as bt
+import vault
 
 
 class EngineTest(unittest.TestCase):
@@ -26,7 +27,8 @@ class EngineTest(unittest.TestCase):
         for path in self.known.values():
             path.mkdir(parents=True)
         for name, value in (('USERPROFILE', self.home), ('APPDATA', self.home / 'AppData' / 'Roaming'),
-                            ('LOCALAPPDATA', self.home / 'AppData' / 'Local')):
+                            ('LOCALAPPDATA', self.home / 'AppData' / 'Local'),
+                            ('CONFIG_DIR', self.home / 'AppData' / 'Roaming' / 'SauvegardePC')):
             patcher = patch.object(bt, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -295,6 +297,91 @@ class RestoreTests(EngineTest):
             engine.restore(folder, ['wifi'], self.job())
         self.assertEqual(calls[0][:3], ['netsh', 'wlan', 'add'])
         self.assertIn(f'filename={folder / "WiFi" / "Wi-Fi-Maison.xml"}', calls[0])
+
+
+KEY = 'AAAAA-BBBBB-CCCCC-DDDDD-EEEEE'
+WIFI_PASSWORD = 'motdepassewifi123'
+
+
+class SensitiveDataTests(EngineTest):
+    @classmethod
+    def setUpClass(cls):
+        cls.doc, cls.recovery = vault.create('mot de passe solide')
+
+    def fake_wifi_export(self, dest, log):
+        (dest / 'WiFi').mkdir(parents=True, exist_ok=True)
+        (dest / 'WiFi' / 'Wi-Fi-Maison.xml').write_text(f'<keyMaterial>{WIFI_PASSWORD}</keyMaterial>')
+
+    def protected_backup(self, doc):
+        self.config['vault'] = doc
+        with patch.object(bt, 'get_windows_key', return_value=KEY), \
+             patch.object(bt, 'export_wifi_profiles', side_effect=self.fake_wifi_export), \
+             patch.object(bt, 'export_drivers'):
+            return self.backup(['files', 'licenses', 'wifi'])
+
+    def assert_no_secret_in(self, folder):
+        for path in Path(folder).rglob('*'):
+            if path.is_file():
+                data = path.read_bytes()
+                self.assertNotIn(KEY.encode(), data, path)
+                self.assertNotIn(WIFI_PASSWORD.encode(), data, path)
+
+    def test_licences_and_wifi_only_stored_encrypted(self):
+        folder, summary, index = self.version(self.protected_backup(self.doc))
+        self.assertEqual(summary['status'], 'complete')
+        self.assertTrue((folder / 'Licences' / vault.LICENSES_BLOB).is_file())
+        self.assertTrue((folder / 'WiFi' / vault.WIFI_BLOB).is_file())
+        self.assertIn('WiFi/' + vault.WIFI_BLOB, index)
+        self.assertEqual(vault.read_vault(folder)['public_key'], self.doc['public_key'])
+        self.assert_no_secret_in(self.dest)
+        self.assertEqual(engine.sensitive_state(folder), dict(licenses='encrypted', wifi='encrypted'))
+        self.assertIn('wifi', engine.detect_categories(folder))
+        private = vault.unlock(vault.read_vault(folder), self.recovery)
+        self.assertEqual(engine.read_licenses(folder, private), [{'logiciel': 'Windows OEM', 'cle': KEY}])
+        # The key also joins this PC's list, protected by the Windows session.
+        self.assertEqual(engine.local_licenses(), [{'logiciel': 'Windows OEM', 'cle': KEY}])
+        self.assertEqual(engine.verify_version(folder, self.job())['partial'], False)
+
+    def test_without_password_sensitive_data_is_not_saved(self):
+        folder, summary, _ = self.version(self.protected_backup(None))
+        self.assertEqual(summary['status'], 'partial')
+        self.assertTrue(any('mot de passe de protection' in e for e in summary['errors']))
+        self.assertFalse((folder / 'Licences').exists())
+        self.assertFalse((folder / 'WiFi').exists())
+
+    def test_encrypted_wifi_restored_with_password_only(self):
+        folder, _, _ = self.version(self.protected_backup(self.doc))
+        seen = []
+        def netsh(args, *a, **k):
+            path = Path(args[4].split('=', 1)[1])
+            seen.append((path, path.read_text()))
+            return True, ''
+        with patch.object(bt, 'run_command', side_effect=netsh):
+            self.assertTrue(engine.restore(folder, ['wifi'], self.job())['partial'])
+            self.assertFalse(seen)
+            engine.restore(folder, ['wifi'], self.job(), private=vault.unlock(self.doc, 'mot de passe solide'))
+        self.assertIn(WIFI_PASSWORD, seen[0][1])
+        self.assertFalse(seen[0][0].exists())  # decrypted copy removed after the import
+
+    def test_old_clear_backups_protected(self):
+        folder, _, index = self.version(self.backup())
+        (folder / 'Licences').mkdir()
+        (folder / 'Licences' / 'licences.json').write_text(json.dumps([{'logiciel': 'Office', 'cle': KEY}]))
+        (folder / 'Licences' / 'licences.txt').write_text(f'Office : {KEY}')
+        (folder / 'WiFi').mkdir()
+        (folder / 'WiFi' / 'Maison.xml').write_text(f'<keyMaterial>{WIFI_PASSWORD}</keyMaterial>')
+        engine._index_exports(folder, index, self.job())
+        engine.write_json(folder / engine.INDEX, index)
+        (self.dest / 'Licences').mkdir()
+        (self.dest / 'Licences' / 'licences.json').write_text(json.dumps([{'logiciel': 'Photoshop', 'cle': 'XYZ'}]))
+        self.assertEqual(len(engine.clear_sensitive_folders(self.dest)), 2)
+        self.assertFalse(engine.protect_existing(self.dest, self.doc, self.job())['partial'])
+        self.assertEqual(engine.clear_sensitive_folders(self.dest), [])
+        self.assert_no_secret_in(self.dest)
+        self.assertFalse(engine.verify_version(folder, self.job())['partial'])
+        private = vault.unlock(self.doc, self.recovery)
+        self.assertEqual(engine.read_licenses(folder, private), [{'logiciel': 'Office', 'cle': KEY}])
+        self.assertIn({'logiciel': 'Photoshop', 'cle': 'XYZ'}, engine.local_licenses())
 
 
 if __name__ == '__main__':

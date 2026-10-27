@@ -18,11 +18,13 @@ import backup_engine as engine
 import scheduler
 import software_backup as sb
 import app_updates
+import vault
 
 
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 WEB = ROOT / "web"
 CATEGORIES = engine.CATEGORIES
+SENSITIVE = ("licenses", "wifi")
 CHECKLIST = (
     "Fichiers personnels copiés et vérifiés sur le support externe",
     "Synchronisation activée (ou export fait) pour chaque navigateur utilisé",
@@ -70,6 +72,10 @@ class BackupAPI:
         self.restore_version = ""
         self.restore_categories = []
         self.restore_browsers = []
+        self.restore_sensitive = {}
+        # Clé du coffre de la version à restaurer, ouverte par mot de passe pour cette session seulement.
+        self.restore_private = None
+        self.clear_folders = 0
         self._window = None
         self.software_plan = None
         self.software_backups = []
@@ -116,13 +122,14 @@ class BackupAPI:
     def _refresh_destination(self):
         """Disque, système de fichiers et versions de la destination (calculés hors du rafraîchissement)."""
         value = self.config.get("last_destination", "")
-        info, versions = {}, []
+        info, versions, clear = {}, [], 0
         if value and Path(value).exists():
             info = dict(same_disk=bt.same_disk_as_system(value), filesystem=bt.filesystem_name(value),
                         hard_links=engine.supports_hard_links(Path(value)))
             versions = [_version_view(v) for v in engine.list_versions(Path(value))]
+            clear = len(engine.clear_sensitive_folders(Path(value)))
         with self.lock:
-            self.dest_info, self.versions = info, versions
+            self.dest_info, self.versions, self.clear_folders = info, versions, clear
 
     def _pick_folder(self, initial=""):
         result = self._window.create_file_dialog(webview.FileDialog.FOLDER, directory=initial)
@@ -185,6 +192,9 @@ class BackupAPI:
                 "restore_version": self.restore_version,
                 "restore_categories": self.restore_categories,
                 "restore_browsers": self.restore_browsers,
+                "restore_sensitive": self.restore_sensitive,
+                "restore_unlocked": self.restore_private is not None,
+                "vault": {"configured": bool(self.config.get("vault")), "clear_folders": self.clear_folders},
                 "software_plan": self.software_plan,
                 "software_backups": self.software_backups,
                 "software_result": self.software_result,
@@ -255,6 +265,8 @@ class BackupAPI:
             self.restore_version = folder
             self.restore_categories = engine.detect_categories(Path(folder)) if folder else []
             self.restore_browsers = engine.browsers_in(Path(folder)) if folder else []
+            self.restore_sensitive = engine.sensitive_state(Path(folder)) if folder else {}
+            self.restore_private = None
         return self.get_state()
 
     def add_custom_folder(self):
@@ -460,24 +472,103 @@ class BackupAPI:
     # ------------------------------------------------------------------ #
 
     def get_licenses(self):
-        return bt.load_licenses(self._destination())
+        destination = self.config.get("last_destination", "")
+        return engine.local_licenses(Path(destination) if destination else None)
 
     def save_licenses(self, licenses):
         if not isinstance(licenses, list) or any(not isinstance(i, dict) for i in licenses):
             raise ValueError("Liste de licences invalide")
         clean = [{"logiciel": str(i.get("logiciel", ""))[:150], "cle": str(i.get("cle", ""))[:500]} for i in licenses]
-        bt.save_licenses(self._destination(), clean, self._log)
+        vault.save_local_licenses(engine.local_licenses_path(), clean)
+        self._log(f"✓ {len(clean)} licence(s) enregistrée(s) sur ce PC (protégées par votre session Windows).")
         return clean
 
     def read_windows_key(self):
         return bt.get_windows_key(self._log)
 
-    def open_restore_licenses(self):
-        path = Path(self.restore_version) / "Licences" / "licences.txt"
-        if not self.restore_version or not path.is_file():
-            return {'ok': False, 'error': 'Aucune licence dans cette sauvegarde.'}
-        os.startfile(str(path))
-        return {'ok': True}
+    # ------------------------------------------------------------------ #
+    # Protection des données sensibles (licences, Wi-Fi)
+    # ------------------------------------------------------------------ #
+
+    def setup_vault(self, password):
+        if self.config.get("vault"):
+            return {"ok": False, "error": "Le mot de passe de protection existe déjà."}
+        try:
+            doc, recovery = vault.create(str(password or ""))
+        except vault.VaultError as exc:
+            return {"ok": False, "error": str(exc)}
+        with self.lock:
+            self.config["vault"] = doc
+            self._save()
+        self._log("✓ Protection des données sensibles activée.")
+        return {"ok": True, "recovery": recovery}
+
+    def change_vault_password(self, secret, new_password):
+        doc = self.config.get("vault")
+        if not doc:
+            return {"ok": False, "error": "Aucun mot de passe de protection n'est encore créé."}
+        try:
+            changed = vault.change_password(doc, str(secret or ""), str(new_password or ""))
+        except vault.VaultError as exc:
+            return {"ok": False, "error": str(exc)}
+        with self.lock:
+            self.config["vault"] = changed
+            self._save()
+        # Les versions déjà sauvegardées s'ouvrent aussi avec le nouveau mot de passe.
+        destination = self.config.get("last_destination", "")
+        if destination and Path(destination).exists():
+            for version in engine.list_versions(Path(destination)):
+                current = vault.read_vault(Path(version["folder"]))
+                if current and current.get("public_key") == changed["public_key"]:
+                    vault.write_vault(Path(version["folder"]) / vault.VAULT_FILE, changed)
+        self._log("✓ Mot de passe de protection modifié. La clé de secours reste valable.")
+        return {"ok": True}
+
+    def unlock_restore(self, secret):
+        if not self.restore_version:
+            return {"ok": False, "error": "Choisissez d’abord la sauvegarde à restaurer."}
+        doc = vault.read_vault(Path(self.restore_version)) or self.config.get("vault")
+        try:
+            private = vault.unlock(doc, str(secret or ""))
+        except vault.VaultError as exc:
+            return {"ok": False, "error": str(exc)}
+        with self.lock:
+            self.restore_private = private
+            if not self.config.get("vault"):
+                # Nouveau PC : il reprend le même mot de passe pour ses prochaines sauvegardes.
+                self.config["vault"] = doc
+                self._save()
+        return {"ok": True}
+
+    def read_restore_licenses(self):
+        if self.restore_sensitive.get("licenses") == "encrypted" and self.restore_private is None:
+            return {"ok": False, "code": "secret_required", "error": "Mot de passe requis."}
+        try:
+            licenses = engine.read_licenses(Path(self.restore_version), self.restore_private)
+        except (vault.VaultError, OSError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "licenses": licenses}
+
+    def import_restore_licenses(self):
+        result = self.read_restore_licenses()
+        if not result.get("ok"):
+            return result
+        known = self.get_licenses()
+        added = [item for item in result["licenses"] if item not in known]
+        vault.save_local_licenses(engine.local_licenses_path(), known + added)
+        self._log(f"✓ {len(added)} licence(s) ajoutée(s) à la liste de ce PC.")
+        return {"ok": True, "added": len(added)}
+
+    def protect_old_backups(self):
+        doc = self.config.get("vault")
+        try:
+            dest = self._destination()
+            if not doc:
+                raise ValueError("Créez d’abord le mot de passe de protection.")
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+        return self._run("Protection des anciennes sauvegardes",
+                         lambda: engine.protect_existing(dest, doc, self._new_job()), cancelable=True)
 
     # ------------------------------------------------------------------ #
     # Opérations longues
@@ -547,6 +638,9 @@ class BackupAPI:
                 raise ValueError("Sélectionnez au moins une catégorie valide.")
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
+        if any(c in SENSITIVE for c in chosen) and not self.config.get("vault"):
+            return {"ok": False, "code": "vault_required",
+                    "error": "Créez d’abord le mot de passe qui protège vos licences et mots de passe Wi-Fi."}
 
         def operation():
             with self.lock:
@@ -594,8 +688,11 @@ class BackupAPI:
         chosen = [c for c in categories if c in self.restore_categories]
         if not chosen:
             return {"ok": False, "error": "Sélectionnez au moins un élément présent dans cette sauvegarde."}
-        folder = Path(self.restore_version)
-        return self._run("Restauration", lambda: engine.restore(folder, chosen, self._new_job()), cancelable=True)
+        if "wifi" in chosen and self.restore_sensitive.get("wifi") == "encrypted" and self.restore_private is None:
+            return {"ok": False, "code": "secret_required", "error": "Mot de passe requis pour restaurer le Wi-Fi."}
+        folder, private = Path(self.restore_version), self.restore_private
+        return self._run("Restauration", lambda: engine.restore(folder, chosen, self._new_job(), private=private),
+                         cancelable=True)
 
     def restore_browser(self, name):
         if not self.restore_version:

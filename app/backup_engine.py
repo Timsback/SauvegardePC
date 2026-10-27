@@ -23,11 +23,13 @@ import shutil
 import socket
 import stat
 import sys
+import tempfile
 import threading
 import time
 from uuid import uuid4
 
 import backup_tasks as bt
+import vault
 
 FORMAT = 1
 SUMMARY = "sauvegarde.json"
@@ -398,7 +400,8 @@ def detect_categories(folder: Path) -> list[str]:
         found.append("email")
     if (folder / "Programmes" / "programmes.json").is_file():
         found.append("programs")
-    if (folder / "WiFi").is_dir() and any((folder / "WiFi").glob("*.xml")):
+    wifi = folder / "WiFi"
+    if (wifi / vault.WIFI_BLOB).is_file() or (wifi.is_dir() and any(wifi.glob("*.xml"))):
         found.append("wifi")
     if (folder / "Pilotes").is_dir() and any((folder / "Pilotes").rglob("*.inf")):
         found.append("drivers")
@@ -542,7 +545,7 @@ def run_backup(root: Path, config: dict, categories, job: Job, app_version: str 
 
         for category in categories:
             if category in ("licenses", "programs", "wifi"):
-                _run_command_category(category, root, folder, job, errors)
+                _run_command_category(category, root, folder, job, errors, config.get("vault"))
         _index_exports(folder, index, job)
 
         summary["status"] = "partial" if errors else "complete"
@@ -642,24 +645,37 @@ def _verify_new(folder, new_files, index, job, errors):
     job.log(f"✓ Vérification : {len(new_files) - bad}/{len(new_files)} fichier(s) copiés identiques à l'original.")
 
 
-def _run_command_category(category, root, folder, job, errors):
+VAULT_MISSING = ("non sauvegardés : créez d'abord le mot de passe de protection "
+                 "(Paramètres → Protection des données sensibles).")
+
+
+def _run_command_category(category, root, folder, job, errors, doc=None):
     log = job.log
     job.start_phase(CATEGORY_LABELS[category])
     log(f"━━ {CATEGORY_LABELS[category].upper()} ━━")
     try:
         if category == "licenses":
-            # Les licences saisies dans l'application restent à la racine de la destination.
-            licenses = bt.load_licenses(root)
+            if not doc:
+                raise RuntimeError("Clés de licence " + VAULT_MISSING)
+            licenses = local_licenses(root)
             key = bt.get_windows_key(log)
             if key and not any(item.get("logiciel") == "Windows OEM" for item in licenses):
                 licenses.append({"logiciel": "Windows OEM", "cle": key})
-                bt.save_licenses(root, licenses, log)
-            bt.save_licenses(folder, licenses, log)
+                vault.save_local_licenses(local_licenses_path(), licenses)
+            vault.write_blob(folder / "Licences" / vault.LICENSES_BLOB, doc,
+                             json.dumps(licenses, ensure_ascii=False).encode("utf-8"))
+            log(f"  ✓ {len(licenses)} licence(s) chiffrée(s) dans Licences\\{vault.LICENSES_BLOB}")
         elif category == "programs":
             bt.export_installed_programs(folder, log)
         elif category == "wifi":
             job.start_phase("Wi-Fi")
-            bt.export_wifi_profiles(folder, log)
+            try:
+                _backup_wifi(folder, doc, log)
+            except bt.Cancelled:
+                raise
+            except Exception as exc:
+                errors.append(f"Wi-Fi : {exc}")
+                log(f"⚠ Wi-Fi : {exc}")
             bt.check_cancel()
             job.start_phase("Export des pilotes")
             bt.export_drivers(folder, log)
@@ -668,6 +684,118 @@ def _run_command_category(category, root, folder, job, errors):
     except Exception as exc:
         errors.append(f"{CATEGORY_LABELS[category]} : {exc}")
         log(f"⚠ {CATEGORY_LABELS[category]} : {exc}")
+
+
+def _backup_wifi(folder: Path, doc, log) -> None:
+    """Exporte les profils (mots de passe en clair) sur le disque local, puis ne garde qu'une copie chiffrée."""
+    if not doc:
+        raise RuntimeError("Profils Wi-Fi " + VAULT_MISSING)
+    with tempfile.TemporaryDirectory(prefix="spc-wifi-") as temporary:
+        bt.export_wifi_profiles(Path(temporary), log)
+        profiles = sorted((Path(temporary) / "WiFi").glob("*.xml"))
+        try:
+            if profiles:
+                vault.write_blob(folder / "WiFi" / vault.WIFI_BLOB, doc, vault.zip_files(profiles))
+                log(f"  ✓ {len(profiles)} profil(s) Wi-Fi chiffré(s) dans WiFi\\{vault.WIFI_BLOB}")
+        finally:
+            for path in profiles:
+                vault.scrub(path)
+
+
+def local_licenses_path() -> Path:
+    return bt.CONFIG_DIR / "licences.protege"
+
+
+def local_licenses(root: Path | None = None) -> list[dict]:
+    """Liste des licences de ce PC. Reprend une fois l'ancienne liste en clair de la destination."""
+    licenses = vault.load_local_licenses(local_licenses_path())
+    if not licenses and root is not None and (Path(root) / "Licences" / "licences.json").is_file():
+        licenses = bt.load_licenses(Path(root))
+        if licenses:
+            vault.save_local_licenses(local_licenses_path(), licenses)
+    return licenses
+
+
+def sensitive_state(folder: Path) -> dict:
+    """Licences et Wi-Fi d'une version : "encrypted", "clear" ou "" (absents)."""
+    folder = Path(folder)
+    licenses, wifi = folder / "Licences", folder / "WiFi"
+    clear_licenses = (licenses / "licences.json").is_file() or (licenses / "licences.txt").is_file()
+    clear_wifi = wifi.is_dir() and any(wifi.glob("*.xml"))
+    return dict(licenses="encrypted" if (licenses / vault.LICENSES_BLOB).is_file() else "clear" if clear_licenses else "",
+                wifi="encrypted" if (wifi / vault.WIFI_BLOB).is_file() else "clear" if clear_wifi else "")
+
+
+def read_licenses(folder: Path, private) -> list[dict]:
+    folder = Path(folder)
+    blob = folder / "Licences" / vault.LICENSES_BLOB
+    if blob.is_file():
+        if private is None:
+            raise vault.VaultError("Mot de passe requis pour lire les licences de cette sauvegarde.")
+        data = json.loads(vault.decrypt(private, blob.read_bytes()).decode("utf-8"))
+        return data if isinstance(data, list) else []
+    return bt.load_licenses(folder)
+
+
+def clear_sensitive_folders(root: Path) -> list[Path]:
+    """Versions (et ancienne sauvegarde à la racine) qui contiennent encore licences ou Wi-Fi en clair."""
+    root = Path(root)
+    candidates = [Path(v["folder"]) for v in list_versions(root) if not v.get("legacy")] + [root]
+    return [f for f in candidates if "clear" in sensitive_state(f).values()]
+
+
+def protect_existing(root: Path, doc: dict, job: Job) -> dict:
+    """Chiffre les licences et profils Wi-Fi restés en clair, puis efface les copies en clair."""
+    root = Path(root)
+    log = job.log
+    folders = clear_sensitive_folders(root)
+    job.start_phase("Protection des anciennes sauvegardes", len(folders))
+    issues = []
+    for folder in folders:
+        bt.check_cancel()
+        try:
+            _protect_folder(root, folder, doc, log)
+        except bt.Cancelled:
+            raise
+        except Exception as exc:
+            issues.append(f"{folder.name} : {exc}")
+            log(f"⚠ {folder.name} : {exc}")
+        job.advance(1, 0, folder.name)
+    log(f"✓ {len(folders) - len(issues)}/{len(folders)} sauvegarde(s) protégée(s), copies en clair effacées.")
+    return dict(partial=bool(issues), report="", message="; ".join(issues))
+
+
+def _protect_folder(root: Path, folder: Path, doc: dict, log) -> None:
+    index = read_json(folder / INDEX)
+    removed, added = [], []
+    licenses_dir, wifi_dir = folder / "Licences", folder / "WiFi"
+    clear_licenses = [p for p in (licenses_dir / "licences.json", licenses_dir / "licences.txt") if p.is_file()]
+    if clear_licenses:
+        licenses = bt.load_licenses(folder)
+        if folder == root:
+            # Ancienne liste de l'application : elle rejoint la liste protégée de ce PC.
+            known = local_licenses()
+            vault.save_local_licenses(local_licenses_path(), known + [item for item in licenses if item not in known])
+        blob = licenses_dir / vault.LICENSES_BLOB
+        vault.write_blob(blob, doc, json.dumps(licenses, ensure_ascii=False).encode("utf-8"))
+        added.append(blob)
+        removed += clear_licenses
+    profiles = sorted(wifi_dir.glob("*.xml")) if wifi_dir.is_dir() else []
+    if profiles:
+        blob = wifi_dir / vault.WIFI_BLOB
+        vault.write_blob(blob, doc, vault.zip_files(profiles))
+        added.append(blob)
+        removed += profiles
+    for path in removed:
+        vault.scrub(path)
+    log(f"  ✓ {folder.name} : {len(removed)} fichier(s) en clair remplacé(s) par une copie chiffrée.")
+    if isinstance(index, dict):
+        for path in removed:
+            index.pop(path.relative_to(folder).as_posix(), None)
+        for path in added:
+            st = path.stat()
+            index[path.relative_to(folder).as_posix()] = [st.st_size, st.st_mtime_ns, file_digest(path)]
+        write_json(folder / INDEX, index)
 
 
 def _index_exports(folder: Path, index: dict, job: Job) -> None:
@@ -762,8 +890,11 @@ def browsers_in(folder: Path) -> list[str]:
     return names
 
 
-def restore(folder: Path, categories, job: Job, browser: str | None = None) -> dict:
-    """Restaure les catégories choisies ; `browser` limite la restauration à un seul navigateur."""
+def restore(folder: Path, categories, job: Job, browser: str | None = None, private=None) -> dict:
+    """Restaure les catégories choisies ; `browser` limite la restauration à un seul navigateur.
+
+    `private` : clé du coffre de la version, nécessaire pour les profils Wi-Fi chiffrés.
+    """
     folder = Path(folder)
     log = job.log
     index = read_json(folder / INDEX, {}) if not is_legacy_backup(folder) else {}
@@ -785,7 +916,7 @@ def restore(folder: Path, categories, job: Job, browser: str | None = None) -> d
                 if not bt.import_installed_programs(folder, log):
                     issues.append("Programmes : certains logiciels restent à réinstaller (voir le journal).")
             elif category == "wifi":
-                bt.import_wifi_profiles(folder, log)
+                _restore_wifi(folder, private, log)
             elif category == "drivers":
                 if not bt.import_drivers(folder, log):
                     issues.append("Pilotes : installation incomplète ou droits administrateur requis.")
@@ -800,6 +931,23 @@ def restore(folder: Path, categories, job: Job, browser: str | None = None) -> d
         report.write_text("\n".join([f"Restauration depuis {folder}", f"Date : {stamp}", "", *issues]), encoding="utf-8")
     return dict(partial=bool(issues), report=str(report or ""),
                 message=f"{len(issues)} point(s) à vérifier." if issues else "")
+
+
+def _restore_wifi(folder: Path, private, log) -> None:
+    blob = folder / "WiFi" / vault.WIFI_BLOB
+    if not blob.is_file():
+        bt.import_wifi_profiles(folder, log)  # sauvegarde antérieure au chiffrement
+        return
+    if private is None:
+        raise vault.VaultError("Mot de passe requis pour restaurer les profils Wi-Fi chiffrés.")
+    data = vault.decrypt(private, blob.read_bytes())
+    with tempfile.TemporaryDirectory(prefix="spc-wifi-") as temporary:
+        profiles = vault.unzip_to(data, Path(temporary) / "WiFi")
+        try:
+            bt.import_wifi_profiles(Path(temporary), log)
+        finally:
+            for path in profiles:
+                vault.scrub(path)
 
 
 def _legacy_sources(folder: Path) -> list[dict]:

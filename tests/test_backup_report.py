@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'app'))
 import backup_engine as engine
 import backup_tasks as bt
 import scheduler
+import vault
 import web_main
 from web_main import BackupAPI
 
@@ -27,6 +28,7 @@ def make_api(dest):
     api.job, api.cancelable, api.estimate, api.versions, api.dest_info = None, False, None, [], {}
     api.restore_versions, api.restore_version, api.restore_categories, api.restore_browsers = [], '', [], []
     api.restore_source, api.auto_seen, api.auto_enabled = '', '', False
+    api.restore_sensitive, api.restore_private, api.clear_folders = {}, None, 0
     api.software_plan, api.software_backups, api.software_result = None, [], None
     api.updates = MagicMock()
     api.updates.snapshot.return_value = {}
@@ -45,6 +47,9 @@ class ApiTest(unittest.TestCase):
         status = patch.object(scheduler, 'STATUS_FILE', self.dest / 'status.json')
         status.start()
         self.addCleanup(status.stop)
+        config_dir = patch.object(bt, 'CONFIG_DIR', self.dest / 'config')
+        config_dir.start()
+        self.addCleanup(config_dir.stop)
         self.api = make_api(self.dest)
         self.addCleanup(self.stop_worker)
 
@@ -150,6 +155,40 @@ class OperationTests(ApiTest):
             self.assertTrue(self.api.restore_full(['files', 'wifi'])['ok'])
             self.wait()
         self.assertEqual(restore.call_args.args[1], ['files'])
+
+    def test_sensitive_categories_require_password(self):
+        self.api.config['selected_categories'] = ['files', 'licenses']
+        result = self.api.start_backup()
+        self.assertEqual(result['code'], 'vault_required')
+        self.assertFalse(self.api.setup_vault('court')['ok'])
+        created = self.api.setup_vault('mot de passe solide')
+        self.assertEqual(len(created['recovery'].replace('-', '')), 24)
+        self.assertFalse(self.api.setup_vault('autre mot de passe')['ok'])
+        self.assertFalse(self.api.change_vault_password('faux', 'nouveau mot de passe')['ok'])
+        self.assertTrue(self.api.change_vault_password(created['recovery'], 'nouveau mot de passe')['ok'])
+        vault.unlock(self.api.config['vault'], 'nouveau mot de passe')
+
+    def test_encrypted_wifi_restore_asks_password_and_new_pc_adopts_vault(self):
+        doc, _ = vault.create('mot de passe solide')
+        folder = self.dest / 'SauvegardePC_PC_2026'
+        vault.write_blob(folder / 'WiFi' / vault.WIFI_BLOB, doc, vault.zip_files([]))
+        self.api.restore_versions = [dict(folder=str(folder))]
+        with patch.object(engine, 'browsers_in', return_value=[]):
+            self.api.set_restore_version(str(folder))
+        self.assertEqual(self.api.restore_sensitive['wifi'], 'encrypted')
+        self.assertEqual(self.api.restore_full(['wifi'])['code'], 'secret_required')
+        self.assertFalse(self.api.unlock_restore('faux mot de passe')['ok'])
+        self.assertTrue(self.api.unlock_restore('mot de passe solide')['ok'])
+        self.assertEqual(self.api.config['vault']['public_key'], doc['public_key'])
+        with patch.object(engine, 'restore', return_value=dict(partial=False)) as restore:
+            self.assertTrue(self.api.restore_full(['wifi'])['ok'])
+            self.wait()
+        self.assertIsNotNone(restore.call_args.kwargs['private'])
+
+    def test_licences_list_kept_on_this_pc_only(self):
+        self.api.save_licenses([{'logiciel': 'Office', 'cle': 'AAAAA'}])
+        self.assertEqual(self.api.get_licenses(), [{'logiciel': 'Office', 'cle': 'AAAAA'}])
+        self.assertFalse((self.dest / 'Licences').exists())
 
     def test_open_folder_refuses_unknown_paths(self):
         with self.assertRaises(ValueError):
