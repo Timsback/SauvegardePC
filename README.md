@@ -6,7 +6,7 @@ réinstallation de Windows » et automatise ce qui peut l'être.
 
 ## Lancer l'application
 
-Le plus simple : télécharge puis exécute `SauvegardePC-Setup.exe` depuis [la dernière version GitHub](https://github.com/ARBJ-prevention/SauvegardePC/releases/latest) — un vrai
+Le plus simple : télécharge puis exécute `SauvegardePC-Setup.exe` depuis [la dernière version GitHub](https://github.com/Timsback/SauvegardePC/releases/latest) — un vrai
 installeur Windows (assistant, choix du dossier, raccourcis, désinstallation
 propre depuis Paramètres → Applications).
 
@@ -210,11 +210,16 @@ Installez cette version une première fois sur chaque PC. Les versions antérieu
 ne possèdent pas ce mécanisme. La recherche peut être déclenchée ou désactivée
 dans **Paramètres → Mises à jour de l'application**.
 
-Le code et les publications sont sur [GitHub](https://github.com/ARBJ-prevention/SauvegardePC).
+Le code et les publications sont sur [GitHub](https://github.com/Timsback/SauvegardePC).
 Pour publier une nouvelle version, suivez [RELEASING.md](RELEASING.md) : un tag
 `vX.Y.Z` déclenche les tests, la compilation et la publication de l'installeur.
 Le script `check_update.py` reste un lanceur de développement local ; il ne
 sert pas au mécanisme de mise à jour distribué aux utilisateurs.
+
+## Licence
+
+Sauvegarde PC est distribué sous licence [MIT](LICENSE). La signature des
+versions publiées est décrite dans [CODE_SIGNING.md](CODE_SIGNING.md).
 
 ## Notes importantes
 
