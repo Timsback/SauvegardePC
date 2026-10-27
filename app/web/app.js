@@ -55,37 +55,112 @@ Object.assign(navIcons,{files:cardIcons.files,browsers:cardIcons.browsers,email:
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const api=()=>window.pywebview?.api;
 function formatDate(value){if(!value)return '—';const d=new Date(value);return Number.isNaN(d.getTime())?value:d.toLocaleString('fr-BE')}
-function categoryDetail(c,s){switch(c.id){case 'files':return `${s.selected_folders.length} dossiers standards sélectionnés`;case 'browsers':return `${Object.values(s.detected_browsers).filter(Boolean).length} navigateur(s) détecté(s)`;case 'licenses':return 'Clé Windows et licences sauvegardées';case 'programs':return 'Inventaire des logiciels';case 'email':return 'Outlook et Thunderbird';case 'wifi':return s.admin?'Export disponible':'Droits administrateur requis';default:return ''}}
+// The state is polled every second: only touch the DOM when the markup actually changed,
+// so focus, hover, open selects and text selections survive the refresh.
+const rendered=new Map();
+function setHTML(sel,html){const el=typeof sel==='string'?$(sel):sel;if(!el||rendered.get(el)===html)return;rendered.set(el,html);el.innerHTML=html}
+function setText(sel,text){const el=$(sel);if(el&&el.textContent!==String(text))el.textContent=text}
+function setValue(sel,value){const el=$(sel);if(el&&document.activeElement!==el&&String(el.value)!==String(value))el.value=value}
+function setChecked(sel,value){const el=$(sel);if(el&&el.checked!==Boolean(value))el.checked=Boolean(value)}
+const restoreLabels={files:'Fichiers personnels',browsers:'Navigateurs (profils complets)',email:'Messagerie (Thunderbird, Outlook .pst, signatures)',programs:'Programmes (réinstallation winget, Internet requis)',wifi:'Profils Wi-Fi',drivers:'Pilotes (administrateur requis)'};
+let restoreSelection=null,restoreSelectionFor='';
+function categoryDetail(c,s){const size=s.estimate?.per_category?.[c.id];if(size&&['files','browsers','email'].includes(c.id))return `${size.size} · ${size.files} fichiers`;switch(c.id){case 'files':return `${s.selected_folders.length} dossiers standards sélectionnés`;case 'browsers':return `${Object.values(s.detected_browsers).filter(Boolean).length} navigateur(s) détecté(s)`;case 'licenses':return 'Clé Windows et licences sauvegardées';case 'programs':return 'Inventaire des logiciels';case 'email':return 'Outlook et Thunderbird';case 'wifi':return s.admin?'Export disponible':'Droits administrateur requis';default:return ''}}
 function notice(message,error=false){const el=$('#notice');el.textContent=message;el.className='show'+(error?' error':'');clearTimeout(noticeTimer);noticeTimer=setTimeout(()=>el.className='',6000)}
 async function invoke(method,...args){try{return await api()[method](...args)}catch(e){notice(String(e),true);return null}}
 function showPage(page){document.querySelectorAll('.page').forEach(el=>el.classList.toggle('active',el.id==='page-'+page));document.body.classList.toggle('home-view',page==='home');document.querySelectorAll('.nav').forEach(el=>el.classList.toggle('active',el.dataset.page===page));if(page==='licenses')loadLicenses();$('.main').scrollTo(0,0)}
-function render(s){state=s;const dest=s.destination||'';$('#drive-title').textContent=dest?dest.split(/[\\/]/).filter(Boolean).pop()||dest:'Aucune destination choisie';$('#drive-subtitle').textContent=dest?(s.destination_exists?'Dossier disponible':'Dossier inaccessible'):'Sélectionnez un disque ou un dossier';$('#drive-path').textContent=dest||'—';$('#drive-status').textContent=s.destination_exists?'Disponible':dest?'À vérifier':'À choisir';$('#drive-status').classList.toggle('missing',!s.destination_exists);$('#drive-date').textContent=formatDate(s.last_backup_at);$('#drive-free').textContent=s.capacity_free||'—';$('#capacity-fill').style.width=(s.capacity_percent||0)+'%';$('#destination-page-path').textContent=dest||'Aucune destination choisie.';$('#last-backup').textContent=s.last_backup_at?'Dernière sauvegarde : '+formatDate(s.last_backup_at):'Aucune sauvegarde enregistrée';$('#status-title').textContent=s.busy?'Sauvegarde en cours':s.last_backup_at?'Sauvegarde effectuée':'Prêt à sauvegarder';$('#status-detail').textContent=s.busy?s.task:dest?'Vos données sont prêtes pour une nouvelle sauvegarde.':'Choisissez une destination pour commencer.';$('#status-symbol').textContent=s.busy?'↻':s.last_backup_at?'✓':'＋';$('#status-ring').classList.toggle('waiting',!s.last_backup_at);$('#task-label').textContent=s.busy?s.task+' · '+s.progress_label:'Aucune opération en cours';$('#progress-value').textContent=s.busy?s.progress+' %':'';$('#progress-fill').style.width=s.busy?s.progress+'%':'0%';$('#activity-indicator').textContent=s.busy?'· en cours':'';document.querySelectorAll('[data-action^="backup-"]').forEach(b=>b.disabled=s.busy);$('#admin-state').textContent=s.admin?'Droits administrateur actifs.':'Droits administrateur requis pour les exports Wi-Fi et pilotes. Relancez l’application en tant qu’administrateur pour ces opérations.';if(s.busy)$('#activity').classList.add('open');
-  $('#category-grid').innerHTML=cats.map(c=>`<label class="glass category ${c.tone}"><span class="cat-icon">${cardIcons[c.id]}</span><span class="cat-copy"><strong>${c.title}</strong><span>${c.desc}</span><small>${categoryDetail(c,s)}</small></span><input class="cat-check" type="checkbox" data-category="${c.id}" ${s.selected_categories.includes(c.id)?'checked':''} aria-label="Inclure ${c.title}"></label>`).join('');
-  $('#hub-grid').innerHTML=cats.map(c=>`<button class="glass category hub-card ${c.tone}" data-page="${c.id}"><span class="cat-icon">${cardIcons[c.id]}</span><span class="cat-copy"><strong>${c.title}</strong><span>${c.desc}</span></span><span class="hub-arrow">→</span></button>`).join('');
-  $('#tools-grid').innerHTML=cats.filter(c=>['programs','wifi','licenses'].includes(c.id)).map(c=>`<button class="glass category hub-card ${c.tone}" data-page="${c.id}"><span class="cat-icon">${cardIcons[c.id]}</span><span class="cat-copy"><strong>${c.title}</strong><span>${c.desc}</span></span><span class="hub-arrow">→</span></button>`).join('');
-  $('#folder-choices').innerHTML=['Bureau','Documents','Images','Téléchargements','Vidéos','Musique'].map(n=>`<label class="choice"><input type="checkbox" data-folder="${n}" ${s.selected_folders.includes(n)?'checked':''}> ${n}</label>`).join('');
-  $('#custom-folders').innerHTML=s.custom_folders.length?s.custom_folders.map(p=>`<div class="item"><span>${esc(p)}</span><button class="secondary" data-remove-folder="${esc(p)}">Retirer</button></div>`).join(''):'<p class="hint">Aucun dossier personnalisé ajouté.</p>';
-  $('#browser-list').innerHTML=Object.entries(s.detected_browsers).map(([n,found])=>`<div class="item"><span>${esc(n)}</span><span>${found?'Détecté':'Non détecté'}</span></div>`).join('');
-  $('#restore-path').textContent=s.restore_source||'Aucun dossier choisi.';$('#restore-list').innerHTML=Object.entries(s.restore_browsers).filter(([,found])=>found).map(([n])=>`<div class="item"><span>${esc(n)}</span><button class="secondary" data-restore="${esc(n)}">Restaurer</button></div>`).join('')||(s.restore_source?'<p class="hint">Aucun profil de navigateur trouvé dans ce dossier.</p>':'');
-  $('#checklist').innerHTML=s.checklist_items.map((item,i)=>`<label class="item"><span><input type="checkbox" data-check="${i}" ${s.checklist[item]?'checked':''}> ${esc(item)}</span></label>`).join('');
-  $('#settings-checklist').innerHTML=$('#checklist').innerHTML;
+function render(s){state=s;const dest=s.destination||'';
+  setText('#drive-title',dest?dest.split(/[\\/]/).filter(Boolean).pop()||dest:'Aucune destination choisie');setText('#drive-subtitle',dest?(s.destination_exists?'Dossier disponible':'Dossier inaccessible (disque débranché ?)'):'Sélectionnez un disque ou un dossier');setText('#drive-path',dest||'—');setText('#drive-status',s.destination_exists?'Disponible':dest?'À vérifier':'À choisir');$('#drive-status').classList.toggle('missing',!s.destination_exists);setText('#drive-date',formatDate(s.last_backup_at));setText('#drive-free',s.capacity_free||'—');$('#capacity-fill').style.width=(s.capacity_percent||0)+'%';setText('#destination-page-path',dest||'Aucune destination choisie.');setText('#last-backup',s.last_backup_at?'Dernière sauvegarde : '+formatDate(s.last_backup_at):'Aucune sauvegarde enregistrée');setText('#status-title',s.busy?s.task+' en cours':s.last_backup_at?'Sauvegarde effectuée':'Prêt à sauvegarder');setText('#status-detail',s.busy?s.progress_label:dest?'Vos données sont prêtes pour une nouvelle sauvegarde.':'Choisissez une destination pour commencer.');setText('#status-symbol',s.busy?'↻':s.last_backup_at?'✓':'＋');$('#status-ring').classList.toggle('waiting',!s.last_backup_at);
+  setText('#task-label',s.busy?s.task+' · '+s.progress_label:'Aucune opération en cours');setText('#progress-value',s.busy?s.progress+' %':'');$('#progress-fill').style.width=s.busy?s.progress+'%':'0%';setText('#progress-detail',s.busy?s.progress_detail||'':'');setText('#activity-indicator',s.busy?'· en cours':'');
+  const cancel=$('#cancel-operation');cancel.hidden=!s.cancelable;cancel.disabled=s.cancel_requested;setText('#cancel-operation',s.cancel_requested?'Annulation…':'Annuler');
+  document.querySelectorAll('[data-action^="backup-"],[data-action="estimate"],[data-action="restore-full"]').forEach(b=>b.disabled=s.busy);
+  setText('#admin-state',s.admin?'Droits administrateur actifs.':'Droits administrateur requis pour les exports Wi-Fi et pilotes, et pour installer des pilotes.');setText('#settings-admin',s.admin?'L’application fonctionne avec les droits administrateur.':'L’application fonctionne sans droits administrateur : Wi-Fi et pilotes sont ignorés.');document.querySelectorAll('[data-admin-button]').forEach(b=>{b.hidden=s.admin;b.disabled=s.busy});
+  if(s.busy)$('#activity').classList.add('open');
+  renderDestination(s);renderEstimate(s);renderSettings(s);renderRestore(s);
+  setHTML('#category-grid',cats.map(c=>`<label class="glass category ${c.tone}"><span class="cat-icon">${cardIcons[c.id]}</span><span class="cat-copy"><strong>${c.title}</strong><span>${c.desc}</span><small>${esc(categoryDetail(c,s))}</small></span><input class="cat-check" type="checkbox" data-category="${c.id}" ${s.selected_categories.includes(c.id)?'checked':''} aria-label="Inclure ${c.title}"></label>`).join(''));
+  setHTML('#hub-grid',cats.map(c=>`<button class="glass category hub-card ${c.tone}" data-page="${c.id}"><span class="cat-icon">${cardIcons[c.id]}</span><span class="cat-copy"><strong>${c.title}</strong><span>${c.desc}</span></span><span class="hub-arrow">→</span></button>`).join(''));
+  setHTML('#tools-grid',cats.filter(c=>['programs','wifi','licenses'].includes(c.id)).map(c=>`<button class="glass category hub-card ${c.tone}" data-page="${c.id}"><span class="cat-icon">${cardIcons[c.id]}</span><span class="cat-copy"><strong>${c.title}</strong><span>${c.desc}</span></span><span class="hub-arrow">→</span></button>`).join(''));
+  setHTML('#folder-choices',['Bureau','Documents','Images','Téléchargements','Vidéos','Musique'].map(n=>`<label class="choice"><input type="checkbox" data-folder="${n}" ${s.selected_folders.includes(n)?'checked':''}> ${n}</label>`).join(''));
+  setHTML('#custom-folders',s.custom_folders.length?s.custom_folders.map(p=>`<div class="item"><span>${esc(p)}</span><button class="secondary" data-remove-folder="${esc(p)}">Retirer</button></div>`).join(''):'<p class="hint">Aucun dossier personnalisé ajouté.</p>');
+  setHTML('#browser-list',Object.entries(s.detected_browsers).map(([n,found])=>`<div class="item"><span>${esc(n)}</span><span>${found?'Détecté':'Non détecté'}</span></div>`).join(''));
+  const checklist=s.checklist_items.map((item,i)=>`<label class="item"><span><input type="checkbox" data-check="${i}" ${s.checklist[item]?'checked':''}> ${esc(item)}</span></label>`).join('');
+  setHTML('#checklist',checklist);setHTML('#settings-checklist',checklist);
   renderSoftwareState(s);
   renderUpdates(s);
-  $('#log').textContent=s.events.map(e=>e.message).join('\n');$('#log').scrollTop=$('#log').scrollHeight;
+  const log=$('#log'),text=s.events.map(e=>e.message).join('\n');if(log.textContent!==text){const atBottom=log.scrollHeight-log.scrollTop-log.clientHeight<30;log.textContent=text;if(atBottom)log.scrollTop=log.scrollHeight}
+}
+function renderDestination(s){
+  const info=s.destination_info||{};
+  const warning=info.same_disk?'Attention : cette destination est sur le même disque physique que Windows. Si ce disque tombe en panne ou est effacé lors de la réinstallation, la sauvegarde sera perdue. Utilisez un disque externe, une clé USB ou un partage réseau.':'';
+  ['#drive-warning','#destination-warning'].forEach(sel=>{setText(sel,warning);$(sel).hidden=!warning});
+  setText('#destination-details',s.destination_exists?`Système de fichiers : ${info.filesystem||'inconnu'} · ${info.hard_links?'versions incrémentales (seules les nouveautés sont copiées)':'chaque version est une copie complète (support sans liens physiques)'}`:'');
+  setValue('#keep-versions',s.settings.keep_versions);
+  setHTML('#version-list',s.versions.length?s.versions.map(v=>`<div class="item version-item"><span><strong>${esc(v.legacy?'Ancienne sauvegarde (version 1.10 ou antérieure)':formatDate(v.created))}</strong> · ${esc(v.status_label)}${v.computer?` · ${esc(v.computer)}`:''}<br><small class="hint">${v.legacy?esc(v.folder):`${v.files} fichiers · ${esc(v.size)} · ${esc(v.copied)} copiés · ${esc(v.categories.join(', '))}`}</small></span><span class="version-actions"><button class="secondary" data-open-folder="${esc(v.folder)}">Ouvrir</button>${v.legacy?'':`<button class="secondary" data-verify-version="${esc(v.folder)}" ${s.busy?'disabled':''}>Vérifier</button>`}</span></div>`).join(''):`<p class="hint">${s.destination_exists?'Aucune version dans cette destination.':'Destination indisponible.'}</p>`);
+  document.querySelectorAll('[data-verify-version]').forEach(b=>b.disabled=s.busy);
+}
+function renderEstimate(s){
+  const e=s.estimate;let text='Taille de la sauvegarde non estimée.';
+  if(e){const skipped=e.skipped||{};const notes=[];if(skipped.cloud)notes.push(`${skipped.cloud} fichier(s) OneDrive en ligne ignoré(s)`);if(skipped.excluded||skipped.large)notes.push(`${(skipped.excluded||0)+(skipped.large||0)} exclusion(s)`);
+    text=`${e.total} sélectionnés · ${e.to_copy} à copier · ${e.free} libres${e.enough_space?'':' — espace insuffisant !'}${notes.length?' · '+notes.join(', '):''}`}
+  setText('#estimate-line',text);$('#estimate-line').classList.toggle('error-text',!!e&&!e.enough_space);
+}
+function renderSettings(s){
+  const st=s.settings;
+  setHTML('#exclusion-list',st.exclusions.length?st.exclusions.map(p=>`<span class="chip">${esc(p)}<button data-remove-exclusion="${esc(p)}" aria-label="Retirer ${esc(p)}">×</button></span>`).join(''):'<p class="hint">Aucune exclusion.</p>');
+  setValue('#max-size',st.max_file_size_mb);
+  document.querySelectorAll('input[name="onedrive"]').forEach(r=>{if(r.checked!==(r.value===st.onedrive_cloud))r.checked=r.value===st.onedrive_cloud});
+  setChecked('#verify-after-copy',st.verify_after_copy);
+  setChecked('#auto-enabled',st.auto_backup.enabled);setValue('#auto-interval',st.auto_backup.interval_days||7);
+  const a=st.auto_status||{};let status=st.auto_backup.enabled?'Activée.':'Désactivée.';
+  if(a.last_success)status+=` Dernière sauvegarde automatique : ${formatDate(a.last_success)}${a.last_result==='partial'?' (avec des points à vérifier)':''}.`;
+  if(a.last_result==='error')status+=` Dernier essai en échec : ${a.last_message||'erreur inconnue'}`;
+  setText('#auto-status',status);
+}
+function renderRestore(s){
+  setText('#restore-path',s.restore_source||'Aucun dossier choisi. Choisissez le disque ou dossier de sauvegarde, ou directement une version.');
+  $('#restore-version-field').hidden=s.restore_versions.length<2;
+  setHTML('#restore-version',s.restore_versions.map(v=>`<option value="${esc(v.folder)}" ${v.folder===s.restore_version?'selected':''}>${esc(v.legacy?'Ancienne sauvegarde':formatDate(v.created)+' · '+v.computer+' · '+v.status_label)}</option>`).join(''));
+  if(restoreSelectionFor!==s.restore_version){restoreSelectionFor=s.restore_version;restoreSelection=new Set(s.restore_categories.filter(c=>!['drivers','programs'].includes(c)))}
+  setHTML('#restore-categories',s.restore_version?(s.restore_categories.length?s.restore_categories.map(c=>`<label class="choice"><input type="checkbox" data-restore-category="${c}" ${restoreSelection.has(c)?'checked':''}> ${esc(restoreLabels[c]||c)}</label>`).join(''):'<p class="hint">Rien à restaurer dans ce dossier.</p>'):'<p class="hint">Choisissez d’abord un dossier de sauvegarde.</p>');
+  $('#open-licenses').hidden=!s.restore_version;
+  setHTML('#restore-list',s.restore_browsers.map(n=>`<div class="item"><span>${esc(n)}</span><button class="secondary" data-restore="${esc(n)}" ${s.busy?'disabled':''}>Restaurer</button></div>`).join('')||(s.restore_source?'<p class="hint">Aucun profil de navigateur trouvé dans ce dossier.</p>':''));
 }
 async function refresh(){const result=await invoke('get_state');if(result)render(result)}
 async function loadLicenses(){try{licenses=await api().get_licenses();renderLicenses()}catch(e){licenses=[];renderLicenses()}}
 function renderLicenses(){$('#license-list').innerHTML=licenses.length?licenses.map((l,i)=>`<div class="item"><span><strong>${esc(l.logiciel)}</strong> &nbsp; <span class="hint">${esc(l.cle)}</span></span><button class="secondary" data-license-remove="${i}">Retirer</button></div>`).join(''):'<p class="hint">Aucune licence enregistrée dans la destination actuelle.</p>'}
-async function start(category){const result=await invoke('start_backup',category);if(result&&!result.ok)notice(result.error,true);else if(result){notice('Opération démarrée. Suivez sa progression dans Activité.');await refresh()}}
+async function start(category){if(state?.destination_info?.same_disk&&!await confirmAction({title:'Destination sur le disque de Windows',message:'La destination est sur le même disque physique que Windows. Une panne de ce disque ou sa réinitialisation pendant la réinstallation effacerait aussi la sauvegarde.\n\nContinuer quand même ?',acceptLabel:'Sauvegarder quand même'}))return;const result=await invoke('start_backup',category);if(result&&!result.ok)notice(result.error,true);else if(result){notice('Opération démarrée. Suivez sa progression dans Activité.');await refresh()}}
 async function onAction(action){if(action==='software-list'){await loadSoftware();return}if(action==='software-backup'){if(await confirmAction({title:state?.software_plan?.program?.name?`Sauvegarder ${state.software_plan.program.name} ?`:'Sauvegarder le logiciel ?',message:'Fermez le logiciel avant de continuer.\n\nLes fichiers et paramètres affichés seront copiés dans votre dossier de sauvegarde, avec l’installeur si vous en avez ajouté un.',acceptLabel:'Sauvegarder'}))await softwareOperation('backup_software');return}if(action==='choose-destination'||action==='choose-restore'||action==='add-folder'){const method=({'choose-destination':'choose_destination','choose-restore':'choose_restore_source','add-folder':'add_custom_folder'})[action];const result=await invoke(method);if(result)render(result);return}
   if(action.startsWith('backup-')){await start(action.substring(7));return}
   if(action==='windows-key'){notice('Recherche de la clé Windows…');const key=await invoke('read_windows_key');$('#windows-key-result').textContent=key||'Aucune clé OEM trouvée. Une licence numérique liée au compte Microsoft est possible.';return}
   if(action==='add-license'){const name=$('#license-name').value.trim(),key=$('#license-key').value.trim();if(!name||!key){notice('Saisissez un nom et une clé.',true);return}licenses.push({logiciel:name,cle:key});$('#license-name').value='';$('#license-key').value='';renderLicenses();notice('Licence ajoutée à la liste. Cliquez sur Enregistrer les licences.');return}
   if(action==='save-licenses'){const result=await invoke('save_licenses',licenses);if(result){licenses=result;notice('Licences enregistrées dans la destination.')}return}
-  if(action==='write-report'){const result=await invoke('write_report');if(result)notice('Rapport créé : '+result)}
+  if(action==='write-report'){const result=await invoke('write_report');if(result)notice('Rapport créé : '+result);return}
+  if(action==='estimate'){await operation('estimate_backup','Estimation démarrée : analyse des fichiers sélectionnés…');return}
+  if(action==='add-exclusion'){const input=$('#exclusion-input');const s=await invoke('add_exclusion',input.value);if(s){input.value='';render(s)}return}
+  if(action==='relaunch-admin'){if(await confirmAction({title:'Relancer en administrateur ?',message:'L’application va se fermer puis se rouvrir avec les droits administrateur après confirmation de Windows.',acceptLabel:'Relancer'})){const r=await invoke('relaunch_admin');if(r&&!r.ok)notice(r.error,true)}return}
+  if(action==='open-licenses'){const r=await invoke('open_restore_licenses');if(r&&!r.ok)notice(r.error,true);return}
+  if(action==='restore-full'){const chosen=[...(restoreSelection||[])].filter(c=>state.restore_categories.includes(c));if(!chosen.length){notice('Cochez au moins un élément à restaurer.',true);return}
+    const message=`Éléments : ${chosen.map(c=>restoreLabels[c]).join(', ')}.\n\nLes fichiers différents déjà présents sur ce PC sont conservés sous un autre nom, rien n’est supprimé. Fermez les navigateurs et la messagerie avant de continuer.${chosen.includes('programs')?'\n\nLa réinstallation des programmes peut durer longtemps et demander des confirmations Windows.':''}`;
+    if(await confirmAction({title:'Restaurer cette sauvegarde sur ce PC ?',message,acceptLabel:'Restaurer'}))await operation('restore_full','Restauration démarrée. Suivez sa progression dans Activité.',chosen);return}
 }
-document.addEventListener('click',async e=>{const page=e.target.closest('[data-page]');if(page){showPage(page.dataset.page);return}const action=e.target.closest('[data-action]');if(action){await onAction(action.dataset.action);return}const remove=e.target.closest('[data-remove-folder]');if(remove){const result=await invoke('remove_custom_folder',remove.dataset.removeFolder);if(result)render(result);return}const restore=e.target.closest('[data-restore]');if(restore){const browser=restore.dataset.restore;if(!await confirmAction({title:'Restaurer '+browser+' ?',message:'Fermez '+browser+' avant de restaurer son profil.',acceptLabel:'Restaurer'}))return;const result=await invoke('restore_browser',browser);if(result&&!result.ok)notice(result.error,true);else notice('Restauration démarrée.');return}const lic=e.target.closest('[data-license-remove]');if(lic){licenses.splice(Number(lic.dataset.licenseRemove),1);renderLicenses();notice('Licence retirée de la liste. Enregistrez pour appliquer.')}});
-document.addEventListener('change',async e=>{const t=e.target;if(t.dataset.category){const s=await invoke('set_selection','category',t.dataset.category,t.checked);if(s)render(s)}else if(t.dataset.folder){const s=await invoke('set_selection','folder',t.dataset.folder,t.checked);if(s)render(s)}else if(t.dataset.check){const s=await invoke('set_checklist',Number(t.dataset.check),t.checked);if(s)render(s)}});
+async function operation(method,started,...args){const result=await invoke(method,...args);if(result&&!result.ok)notice(result.error,true);else if(result){notice(started);await refresh()}}
+document.addEventListener('click',async e=>{const page=e.target.closest('[data-page]');if(page){showPage(page.dataset.page);return}const action=e.target.closest('[data-action]');if(action){await onAction(action.dataset.action);return}const remove=e.target.closest('[data-remove-folder]');if(remove){const result=await invoke('remove_custom_folder',remove.dataset.removeFolder);if(result)render(result);return}const restore=e.target.closest('[data-restore]');if(restore){const browser=restore.dataset.restore;if(!await confirmAction({title:'Restaurer '+browser+' ?',message:'Fermez '+browser+' avant de restaurer son profil.',acceptLabel:'Restaurer'}))return;const result=await invoke('restore_browser',browser);if(result&&!result.ok)notice(result.error,true);else notice('Restauration démarrée.');return}const lic=e.target.closest('[data-license-remove]');if(lic){licenses.splice(Number(lic.dataset.licenseRemove),1);renderLicenses();notice('Licence retirée de la liste. Enregistrez pour appliquer.');return}
+  const excl=e.target.closest('[data-remove-exclusion]');if(excl){const s=await invoke('remove_exclusion',excl.dataset.removeExclusion);if(s)render(s);return}
+  const open=e.target.closest('[data-open-folder]');if(open){await invoke('open_folder',open.dataset.openFolder);return}
+  const verify=e.target.closest('[data-verify-version]');if(verify){if(await confirmAction({title:'Vérifier cette version ?',message:'Chaque fichier est relu sur le support et comparé à son empreinte SHA-256. Cela peut prendre du temps sur une grosse sauvegarde.',acceptLabel:'Vérifier'}))await operation('verify_version','Vérification démarrée.',verify.dataset.verifyVersion)}});
+document.addEventListener('change',async e=>{const t=e.target;let s=null;
+  if(t.dataset.category)s=await invoke('set_selection','category',t.dataset.category,t.checked);
+  else if(t.dataset.folder)s=await invoke('set_selection','folder',t.dataset.folder,t.checked);
+  else if(t.dataset.check)s=await invoke('set_checklist',Number(t.dataset.check),t.checked);
+  else if(t.dataset.restoreCategory){t.checked?restoreSelection.add(t.dataset.restoreCategory):restoreSelection.delete(t.dataset.restoreCategory);return}
+  else if(t.id==='keep-versions')s=await invoke('set_setting','keep_versions',Number(t.value));
+  else if(t.id==='max-size')s=await invoke('set_setting','max_file_size_mb',Number(t.value||0));
+  else if(t.name==='onedrive')s=await invoke('set_setting','onedrive_cloud',t.value);
+  else if(t.id==='verify-after-copy')s=await invoke('set_setting','verify_after_copy',t.checked);
+  else if(t.id==='auto-enabled'||t.id==='auto-interval'){s=await invoke('set_auto_backup',$('#auto-enabled').checked,Number($('#auto-interval').value));if(s)notice($('#auto-enabled').checked?'Sauvegarde automatique activée.':'Sauvegarde automatique désactivée.')}
+  else if(t.id==='restore-version')s=await invoke('set_restore_version',t.value);
+  if(s)render(s);else if(state)render(state)});
+$('#exclusion-input').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();onAction('add-exclusion')}});
+$('#cancel-operation').addEventListener('click',async()=>{const r=await invoke('cancel_operation');if(r&&!r.ok)notice(r.error,true);else await refresh()});
 $('#toggle-log').addEventListener('click',()=>{const el=$('#log');el.classList.toggle('open');$('#toggle-log').textContent=el.classList.contains('open')?'Masquer le journal':'Afficher le journal'});
 $('#activity-toggle').addEventListener('click',()=>$('#activity').classList.toggle('open'));
 window.addEventListener('pywebviewready',()=>{refresh();poll=setInterval(refresh,1100);invoke('check_updates',false);setInterval(()=>invoke('check_updates',false),6*60*60*1000)});
@@ -157,7 +232,7 @@ function renderSoftwareState(s){
   }
   $('#software-backup').disabled=s.busy||!p||(!p.files.length&&!p.registry.length&&!['msi','exe','winget'].includes(p.installer?.method));
   document.querySelectorAll('[data-software-analyze]').forEach(b=>b.disabled=s.busy);
-  $('#software-restores').innerHTML=(s.software_backups||[]).map(b=>`
+  setHTML('#software-restores',(s.software_backups||[]).map(b=>`
     <div class="item software-snapshot"><div class="software-copy">
       <strong>${esc(b.name)}</strong> ${esc(b.version)}<br>
       <small>${esc(formatDate(b.created))} · ${b.count} fichiers · ${b.status==='complete'?'Copie terminée — couverture selon analyse':'Sauvegarde partielle'}</small>
@@ -166,7 +241,7 @@ function renderSoftwareState(s){
     </div><div class="software-actions">
       <button class="primary" data-software-restore="${esc(b.id)}" ${s.busy?'disabled':''}>${b.schema===2?'Installer et restaurer':'Restaurer les données'}</button>
       ${b.schema===2?`<button class="secondary" data-software-installer="${esc(b.id)}" ${s.busy?'disabled':''}>Ajouter / remplacer l’installeur</button>`:''}
-    </div></div>`).join('')||'<p class="hint">Aucune sauvegarde de logiciel trouvée dans la source choisie.</p>';
+    </div></div>`).join('')||'<p class="hint">Aucune sauvegarde de logiciel trouvée dans la source choisie.</p>');
   document.querySelectorAll('[data-software-installer]').forEach(b=>b.disabled=s.busy);
 }
 function installerDescription(method){

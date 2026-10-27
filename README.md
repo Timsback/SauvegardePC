@@ -6,7 +6,7 @@ réinstallation de Windows » et automatise ce qui peut l'être.
 
 ## Lancer l'application
 
-Le plus simple : télécharge puis exécute `SauvegardePC-Setup.exe` depuis [la dernière version GitHub](https://github.com/ARBJ-prevention/SauvegardePC/releases/latest) — un vrai
+Le plus simple : télécharge puis exécute `SauvegardePC-Setup.exe` depuis [la dernière version GitHub](https://github.com/Timsback/SauvegardePC/releases/latest) — un vrai
 installeur Windows (assistant, choix du dossier, raccourcis, désinstallation
 propre depuis Paramètres → Applications).
 
@@ -19,7 +19,7 @@ python app/web_main.py
 ```
 
 Pour les exports Wi-Fi et pilotes (qui exigent les droits administrateur),
-lancez l'application avec un clic droit → « Exécuter en tant qu'administrateur ».
+utilisez **Relancer en administrateur** (pages Wi-Fi & pilotes et Paramètres).
 
 ## Fonctionnalités
 
@@ -27,17 +27,21 @@ lancez l'application avec un clic droit → « Exécuter en tant qu'administrate
   Vidéos, Musique (détection correcte même si OneDrive redirige ces
   dossiers), + sauvegardes de jeux (`Saved Games`) et dossiers personnalisés
   (VPN, certificats, logiciels métier, presets, photos de téléphone...).
-- **Navigateurs** : détecte Chrome / Edge / Firefox et copie leur profil
-  (favoris, mots de passe chiffrés, historique) en filet de sécurité — la
-  synchronisation de compte reste la méthode principale recommandée.
+  **Exclusions** par nom ou motif (`node_modules`, `*.iso`…) et taille
+  maximale par fichier. Les fichiers OneDrive disponibles uniquement en
+  ligne sont ignorés par défaut (option pour les télécharger).
+- **Navigateurs** : Chrome, Edge, Firefox, Brave, Vivaldi, Opera et Opera GX
+  (favoris, mots de passe chiffrés, historique, sans les caches) en filet de
+  sécurité — la synchronisation de compte reste la méthode principale.
 - **Licences** : récupère la clé Windows OEM (PowerShell) et permet de
   saisir manuellement d'autres clés logicielles, enregistrées dans le
-  dossier de sauvegarde.
+  dossier de sauvegarde. Le journal et le rapport n'affichent qu'une clé masquée.
 - **Programmes** : exporte la liste des logiciels installés via `winget`
   (réinstallation automatique possible) et une liste complète pour repérer
   les logiciels non pris en charge par winget.
-- **E-mail** : copie les fichiers Outlook (`.pst`/`.ost`) et les profils
-  Thunderbird trouvés localement.
+- **E-mail** : profils Thunderbird, fichiers Outlook `.pst` (dossier Outlook
+  et `Documents\Fichiers Outlook`) et signatures Outlook. Les `.ost` (copies
+  locales de boîtes en ligne) ne sont pas copiés.
 - **Wi-Fi & pilotes** : exporte les profils Wi-Fi enregistrés (avec mots de
   passe) et les pilotes installés (nécessite les droits administrateur).
 - **Checklist finale** : coche les étapes à ne pas oublier, état sauvegardé
@@ -45,7 +49,61 @@ lancez l'application avec un clic droit → « Exécuter en tant qu'administrate
   sauvegarde.
 - **Tout sauvegarder en un clic** : enchaîne toutes les étapes
   automatisables vers le dossier choisi. L'écran d'accueil permet de choisir
-  les catégories à inclure dans cette sauvegarde.
+  les catégories et d'**estimer la taille** (total, part à copier, espace libre)
+  avant de lancer. L'espace libre est contrôlé avant toute copie.
+- **Progression globale et annulation** : une seule barre pour toute la
+  sauvegarde, avec le temps restant estimé et un bouton **Annuler**.
+
+### Versions datées et incrémentales
+
+Chaque sauvegarde crée un dossier `SauvegardePC_<PC>_<date>` dans la
+destination, avec `sauvegarde.json` (résumé), `fichiers.json` (taille, date et
+SHA-256 de chaque fichier), `rapport_sauvegarde.txt` et `journal.txt`. Sur un
+disque NTFS, les fichiers inchangés depuis la version précédente sont ajoutés
+par **lien physique** : chaque version est complète et lisible seule, mais seules
+les nouveautés prennent de la place. Sur exFAT/FAT32, chaque version est une
+copie complète. Le nombre de versions conservées se règle dans **Destination**
+(3 par défaut) ; une sauvegarde annulée ou en échec ne sert jamais de référence.
+
+Ne modifiez pas les fichiers à l'intérieur d'une version : grâce aux liens
+physiques, un même fichier peut appartenir à plusieurs versions.
+
+Chaque fichier copié est relu et comparé à son empreinte (désactivable dans
+**Paramètres**). **Vérifier** (page Destination) recontrôle une version
+entière plus tard, par exemple avant de réinstaller Windows.
+
+Une alerte s'affiche lorsque la destination est sur le même disque physique
+que Windows.
+
+### Restauration complète
+
+Dans **Restauration**, choisissez le disque de sauvegarde (la version la plus
+récente est proposée, les autres restent sélectionnables), une version précise
+ou une ancienne sauvegarde 1.10. Cochez les éléments à restaurer :
+
+- **Fichiers personnels** : remis dans les dossiers Windows de l'utilisateur
+  courant ; les dossiers personnalisés retrouvent leur chemin d'origine (ou
+  `Dossiers restaurés` si le disque d'origine n'existe plus). Un fichier
+  identique est ignoré, un fichier différent déjà présent est conservé sous le
+  nom `… (avant restauration <date>)`.
+- **Navigateurs et messagerie** : le profil existant est mis de côté en entier,
+  puis le profil sauvegardé est copié. Firefox et Thunderbird sont déclarés dans
+  `profiles.ini` / `installs.ini` pour s'ouvrir directement sur le profil
+  restauré. La restauration refuse de démarrer si le programme est ouvert.
+  Les `.pst` sont placés dans `Documents\Fichiers Outlook` (à ouvrir dans Outlook).
+- **Programmes** : `winget import` (Internet requis, peut être long).
+- **Wi-Fi** : `netsh wlan add profile`. **Pilotes** : `pnputil /add-driver`
+  (droits administrateur).
+
+### Sauvegarde automatique
+
+Dans **Paramètres → Sauvegarde automatique**, choisissez chaque jour ou chaque
+semaine. Une tâche du Planificateur de tâches Windows (`Sauvegarde PC -
+sauvegarde automatique`) lance `SauvegardePC.exe --auto-backup` toutes les 30
+minutes, sans fenêtre : la sauvegarde ne démarre que si elle est due et si le
+disque de destination est branché, donc peu après son branchement. Le résultat
+est affiché dans Paramètres (`%APPDATA%\SauvegardePC\sauvegarde_auto.json`).
+L'interface et la tâche ne peuvent jamais travailler en même temps.
 
 ## Structure du projet
 
@@ -127,14 +185,19 @@ Application-sauvegardePC/
 └── app/
     ├── web_main.py        → passerelle WebView2 / Python
     ├── web/               → interface Aurora HTML, CSS et JavaScript
-    ├── main.py            → ancienne interface Tkinter (conservée)
-    └── backup_tasks.py    → logique de sauvegarde (fichiers, navigateurs,
-                              licences, programmes, e-mail, Wi-Fi, pilotes)
+    ├── backup_engine.py   → versions, copie incrémentale, vérification,
+    │                         estimation et restauration complète
+    ├── backup_tasks.py    → briques Windows (dossiers connus, navigateurs,
+    │                         messagerie, licences, winget, Wi-Fi, pilotes, disques)
+    ├── scheduler.py       → sauvegarde automatique (Planificateur de tâches)
+    ├── software_*.py      → sauvegarde et réinstallation par logiciel
+    └── app_updates.py     → mises à jour depuis GitHub Releases
 ```
 
-La configuration (dossiers personnalisés, état de la checklist, dernier
-dossier de destination) est stockée dans
-`%APPDATA%\SauvegardePC\config.json`.
+La configuration (dossiers personnalisés, exclusions, versions conservées,
+checklist, dernier dossier de destination…) est stockée dans
+`%APPDATA%\SauvegardePC\config.json` (écriture atomique ; un fichier illisible
+est conservé sous `config.corrompu.json`).
 
 ## Mises à jour et publication
 
@@ -147,11 +210,16 @@ Installez cette version une première fois sur chaque PC. Les versions antérieu
 ne possèdent pas ce mécanisme. La recherche peut être déclenchée ou désactivée
 dans **Paramètres → Mises à jour de l'application**.
 
-Le code et les publications sont sur [GitHub](https://github.com/ARBJ-prevention/SauvegardePC).
+Le code et les publications sont sur [GitHub](https://github.com/Timsback/SauvegardePC).
 Pour publier une nouvelle version, suivez [RELEASING.md](RELEASING.md) : un tag
 `vX.Y.Z` déclenche les tests, la compilation et la publication de l'installeur.
 Le script `check_update.py` reste un lanceur de développement local ; il ne
 sert pas au mécanisme de mise à jour distribué aux utilisateurs.
+
+## Licence
+
+Sauvegarde PC est distribué sous licence [MIT](LICENSE). La signature des
+versions publiées est décrite dans [CODE_SIGNING.md](CODE_SIGNING.md).
 
 ## Notes importantes
 

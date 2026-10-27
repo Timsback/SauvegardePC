@@ -33,7 +33,19 @@ jobs:
       - name: Test
         run: python -m unittest discover -s tests -v
       - name: Build installer and checksum
-        run: python scripts/build_release.py
+        shell: pwsh
+        env:
+          # Optional: add these repository secrets to sign the executable and the installer.
+          SIGN_PFX_BASE64: ${{ secrets.SIGN_PFX_BASE64 }}
+          SIGN_PFX_PASSWORD: ${{ secrets.SIGN_PFX_PASSWORD }}
+        run: |
+          if ($env:SIGN_PFX_BASE64) {
+            $pfx = Join-Path $env:RUNNER_TEMP 'signing.pfx'
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGN_PFX_BASE64))
+            $env:SIGN_PFX = $pfx
+          }
+          python scripts/build_release.py
+          if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
       - name: Keep build artifacts
         uses: actions/upload-artifact@v4
         with:

@@ -1,13 +1,13 @@
 # Publier une version
 
-Le dépôt public de référence est **ARBJ-prevention/SauvegardePC**. Les PC ne
+Le dépôt public de référence est **Timsback/SauvegardePC**. Les PC ne
 contiennent aucun jeton GitHub. Ils consultent uniquement les versions publiques
 stables et téléchargent l'installeur associé après confirmation de l'utilisateur.
 
 ## Première installation sur les PC
 
 Installez une fois la version **1.10.1 ou ultérieure** depuis
-[la dernière version](https://github.com/ARBJ-prevention/SauvegardePC/releases/latest).
+[la dernière version](https://github.com/Timsback/SauvegardePC/releases/latest).
 Les anciennes versions sans mécanisme de mise à jour ne peuvent pas se mettre à
 jour seules. Les réglages restent dans `%APPDATA%\SauvegardePC` et les sauvegardes
 restent à l'emplacement choisi par l'utilisateur.
@@ -21,7 +21,7 @@ restent à l'emplacement choisi par l'utilisateur.
 3. Enregistrez et envoyez les modifications, puis le tag correspondant :
 
 ```powershell
-git add app tests scripts .github README.md RELEASE_NOTES.md RELEASING.md installer.iss requirements-build.txt
+git add app tests scripts .github README.md RELEASE_NOTES.md RELEASING.md CODE_SIGNING.md LICENSE installer.iss requirements-build.txt
 git commit -m "Prepare release 1.10.1"
 git push origin main
 git tag v1.10.1
@@ -54,8 +54,27 @@ publique utilisée par des PC.
 Les téléchargements proviennent du dépôt configuré, en HTTPS. Le SHA-256 protège
 contre une corruption du téléchargement ; il ne remplace pas la sécurité du
 compte GitHub. Activez l'authentification à deux facteurs pour les comptes qui
-peuvent publier. Les exécutables ne sont pas signés avec un certificat Windows :
-SmartScreen peut demander une confirmation lors de l'installation.
+peuvent publier.
+
+## Signature de code (optionnelle)
+
+Sans certificat, les exécutables ne sont pas signés et SmartScreen peut demander
+une confirmation lors de l'installation. La solution visée est la signature
+gratuite de SignPath Foundation pour les projets open source, selon la politique
+décrite dans [CODE_SIGNING.md](CODE_SIGNING.md) ; le workflow sera adapté à leur
+action GitHub une fois le projet accepté.
+
+En attendant, le workflow sait signer avec un certificat au format .pfx :
+
+1. Obtenez un certificat de signature de code (.pfx) auprès d'une autorité reconnue.
+2. Dans GitHub → Settings → Secrets and variables → Actions, ajoutez
+   `SIGN_PFX_BASE64` (le .pfx encodé en base64 :
+   `[Convert]::ToBase64String([IO.File]::ReadAllBytes('certificat.pfx'))`) et
+   `SIGN_PFX_PASSWORD`.
+
+Le workflow signe alors automatiquement les deux fichiers avec `signtool`
+(horodatage DigiCert). En local, définissez `SIGN_PFX` (chemin du .pfx) et
+`SIGN_PFX_PASSWORD` avant `python scripts/build_release.py`.
 
 ## Compiler localement
 
