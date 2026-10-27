@@ -78,6 +78,28 @@ def ensure_dir(path: Path) -> Path:
     return path
 
 
+_ACCENTS = set("éèêëàâäçùûüîïôöÉÈÊÀÇ")
+
+
+def decode_output(data: bytes) -> str:
+    """Texte d'un outil Windows. Chacun a son encodage : winget et netsh écrivent en UTF-8,
+    dism en page de code OEM (cp850), pnputil en page de code ANSI (cp1252). Sans ce choix,
+    chaque lettre accentuée s'affiche « � » dans le journal."""
+    if not data:
+        return ""
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    try:
+        oem, ansi = f"cp{ctypes.windll.kernel32.GetOEMCP()}", f"cp{ctypes.windll.kernel32.GetACP()}"
+    except AttributeError:
+        oem, ansi = "cp850", "cp1252"
+    candidates = [data.decode(encoding, errors="replace") for encoding in (oem, ansi)]
+    # La bonne page de code est celle qui produit des lettres accentuées françaises.
+    return max(candidates, key=lambda text: sum(c in _ACCENTS for c in text))
+
+
 def run_command(args, log, timeout=600, log_output=True) -> tuple[bool, str]:
     """
     Exécute une commande et journalise stdout/stderr. Renvoie (succès, sortie).
@@ -88,7 +110,6 @@ def run_command(args, log, timeout=600, log_output=True) -> tuple[bool, str]:
     try:
         process = subprocess.Popen(
             args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
-            text=True, encoding="utf-8", errors="replace",
             creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
         )
     except FileNotFoundError:
@@ -112,7 +133,7 @@ def run_command(args, log, timeout=600, log_output=True) -> tuple[bool, str]:
                     raise Cancelled("Opération annulée.")
                 log(f"⚠ Commande interrompue après {timeout // 60 or 1} min sans réponse : {args[0]}")
                 return False, ""
-    output = (stdout or "") + (stderr or "")
+    output = decode_output(stdout or b"") + decode_output(stderr or b"")
     if log_output and output.strip():
         log(output.strip())
     return process.returncode == 0, output

@@ -32,8 +32,10 @@ def task_command() -> str:
 
 
 def _schtasks(*args) -> subprocess.CompletedProcess:
-    return subprocess.run(["schtasks", *args], capture_output=True, text=True, errors="replace",
-                          stdin=subprocess.DEVNULL, timeout=30, creationflags=NO_WINDOW)
+    result = subprocess.run(["schtasks", *args], capture_output=True,
+                            stdin=subprocess.DEVNULL, timeout=30, creationflags=NO_WINDOW)
+    result.stdout, result.stderr = bt.decode_output(result.stdout), bt.decode_output(result.stderr)
+    return result
 
 
 def enable() -> None:

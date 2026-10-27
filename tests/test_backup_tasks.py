@@ -123,6 +123,17 @@ class CommandTests(TempDirTest):
         self.assertIn('SECRET-KEY', output)
         self.assertFalse(any('SECRET-KEY' in line for line in self.logs))
 
+    def test_accents_kept_whatever_the_tool_encoding(self):
+        # winget/netsh: UTF-8 ; dism: OEM (cp850) ; pnputil: ANSI (cp1252).
+        text = 'Le package du pilote a été correctement exporté. L’opération a réussi.'.replace('’', "'")
+        for encoding in ('utf-8', 'cp850', 'cp1252'):
+            with self.subTest(encoding=encoding):
+                self.assertEqual(bt.decode_output(text.encode(encoding)), text)
+        script = 'import sys; sys.stdout.buffer.write("Opération réussie".encode("cp850"))'
+        ok, output = bt.run_command([sys.executable, '-c', script], self.log)
+        self.assertEqual(output, 'Opération réussie')
+        self.assertIn('Opération réussie', self.logs)
+
     def test_command_timeout_does_not_block(self):
         started = time.monotonic()
         ok, _ = bt.run_command([sys.executable, '-c', 'import time; time.sleep(30)'], self.log, timeout=1)
