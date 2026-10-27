@@ -16,7 +16,7 @@ installeurs via SignPath Foundation est en cours de mise en place ; voir
 [CODE_SIGNING.md](CODE_SIGNING.md).
 
 En développement, double-clique sur [`Lancer.bat`](Lancer.bat) — nécessite
-Python et `pywebview` installés (`pip install pywebview`). Ou en ligne
+Python, `pywebview` et `cryptography` installés (`pip install pywebview cryptography`). Ou en ligne
 de commande :
 
 ```bash

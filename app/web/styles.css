@@ -204,3 +204,9 @@ html,body{height:100%;overflow:hidden}
 .dest-actions .secondary{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .back-link{padding:0;margin-bottom:10px;font-size:14px}
 @media(max-width:760px){.dest-actions{grid-template-columns:minmax(0,1fr)}}
+/* Mot de passe de protection et clé de secours. */
+.secret-field{display:grid;gap:6px;margin-top:14px;color:#c8d5e8;font-size:14px}
+.secret-field input{background:#0b203b;border:1px solid #7ba9dd72;border-radius:8px;padding:11px;color:#fff;font:inherit}
+.confirmation-content #secret-error{margin-top:10px;min-height:1.2em;color:#ffb3c8}
+.recovery-code{margin:16px 0!important;padding:14px;border:1px dashed #8ce5ff88;border-radius:10px;background:#0b203b;color:#e9fbff!important;font-family:Consolas,monospace;font-size:19px!important;letter-spacing:.06em;text-align:center;user-select:all}
+#restore-licenses{margin-top:18px}

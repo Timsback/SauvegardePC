@@ -460,7 +460,7 @@ def get_windows_key(log) -> str:
     )
     key = output.strip()
     if ok and key:
-        log(f"  ✓ Clé trouvée : {mask_key(key)} (complète dans Licences\\licences.txt)")
+        log(f"  ✓ Clé trouvée : {mask_key(key)} (complète dans la liste des licences, chiffrée dans la sauvegarde)")
         return key
     if not ok and key:
         log(f"  ⚠ Lecture de la clé impossible : {key.splitlines()[0][:200]}")
@@ -476,19 +476,6 @@ def load_licenses(dest: Path) -> list[dict]:
         except Exception:
             return []
     return []
-
-
-def save_licenses(dest: Path, licenses: list[dict], log) -> None:
-    lic_dir = ensure_dir(dest / "Licences")
-    lic_file = lic_dir / "licences.json"
-    lic_file.write_text(json.dumps(licenses, indent=2, ensure_ascii=False), encoding="utf-8")
-
-    txt_file = lic_dir / "licences.txt"
-    lines = ["Clés et licences enregistrées", "=" * 32, ""]
-    for item in licenses:
-        lines.append(f"{item.get('logiciel', '?')} : {item.get('cle', '')}")
-    txt_file.write_text("\n".join(lines), encoding="utf-8")
-    log(f"  ✓ {len(licenses)} licence(s) enregistrée(s) dans {txt_file}")
 
 
 # --------------------------------------------------------------------------- #
