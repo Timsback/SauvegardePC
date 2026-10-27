@@ -135,7 +135,8 @@ def run_command(args, log, timeout=600, log_output=True) -> tuple[bool, str]:
                 return False, ""
     output = decode_output(stdout or b"") + decode_output(stderr or b"")
     if log_output and output.strip():
-        log(output.strip())
+        # « │ » marque la sortie brute de l'outil (détails techniques du journal).
+        log("\n".join("  │ " + line for line in output.strip().splitlines()))
     return process.returncode == 0, output
 
 

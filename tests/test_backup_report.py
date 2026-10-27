@@ -23,7 +23,7 @@ def make_api(dest):
     api.config.update(last_destination=str(dest), selected_categories=['files'], selected_folders=['Documents'],
                       auto_check_updates=True)
     api.lock = threading.RLock()
-    api.events, api.session_log, api.operation_log = [], [], []
+    api.events, api.session_log, api.operation_log, api.event_seq = [], [], [], 0
     api.busy, api.task, api.progress, api.progress_label = False, '', 0, ''
     api.job, api.cancelable, api.estimate, api.versions, api.dest_info = None, False, None, [], {}
     api.restore_versions, api.restore_version, api.restore_categories, api.restore_browsers = [], '', [], []
@@ -116,7 +116,8 @@ class OperationTests(ApiTest):
             self.assertTrue(self.api.get_state()['cancelable'])
             self.assertTrue(self.api.cancel_operation()['ok'])
             self.wait()
-        self.assertEqual(self.api.events[-1], {'kind': 'warning', 'message': 'Sauvegarde annulé.'})
+        self.assertEqual({k: self.api.events[-1][k] for k in ('kind', 'message')}, {'kind': 'warning', 'message': 'Sauvegarde annulé.'})
+        self.assertRegex(self.api.events[-1]['at'], r'^\d\d:\d\d:\d\d$')
         self.assertFalse(bt.CANCEL.is_set())
         self.assertFalse(self.api.config['last_backup_at'])
 

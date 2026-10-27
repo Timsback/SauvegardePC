@@ -132,7 +132,7 @@ class CommandTests(TempDirTest):
         script = 'import sys; sys.stdout.buffer.write("Opération réussie".encode("cp850"))'
         ok, output = bt.run_command([sys.executable, '-c', script], self.log)
         self.assertEqual(output, 'Opération réussie')
-        self.assertIn('Opération réussie', self.logs)
+        self.assertIn('  │ Opération réussie', self.logs)
 
     def test_command_timeout_does_not_block(self):
         started = time.monotonic()

@@ -58,6 +58,7 @@ class BackupAPI:
         self.config.setdefault("selected_folders", list(bt.STANDARD_FOLDERS))
         self.lock = threading.RLock()
         self.events: list[dict] = []
+        self.event_seq = 0  # lets the interface redraw the journal only when it changed
         # Unlike `events` (trimmed for the UI), these keep every line for the reports.
         self.session_log: list[str] = []
         self.operation_log: list[str] = []
@@ -91,7 +92,8 @@ class BackupAPI:
 
     def _event(self, kind, message):
         with self.lock:
-            self.events.append({"kind": kind, "message": str(message)})
+            self.event_seq += 1
+            self.events.append({"kind": kind, "message": str(message), "at": datetime.now().strftime("%H:%M:%S")})
             self.events = self.events[-600:]
 
     def _log(self, message):
@@ -199,7 +201,8 @@ class BackupAPI:
                 "software_backups": self.software_backups,
                 "software_result": self.software_result,
                 "update_info": dict(self.updates.snapshot(), enabled=self.config['auto_check_updates']),
-                "events": self.events[-150:],
+                "events": self.events[-400:],
+                "event_seq": self.event_seq,
             }
 
     # ------------------------------------------------------------------ #
