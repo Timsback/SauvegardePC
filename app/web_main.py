@@ -740,9 +740,26 @@ def auto_backup_main() -> int:
         lock.release()
 
 
+def _enable_per_monitor_dpi():
+    """Render natively at every Windows scale (100 %, 125 %, 150 %, 200 %) and on each monitor.
+
+    pywebview only calls SetProcessDPIAware (system DPI): on a monitor whose scale differs from
+    the primary one, Windows then stretches the window bitmap and the interface turns blurry.
+    Per-monitor v2 must be set before the first window exists; pywebview's later call is a no-op.
+    """
+    if sys.platform != "win32":
+        return
+    import ctypes
+    try:
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))  # PER_MONITOR_AWARE_V2
+    except (AttributeError, OSError):  # Before Windows 10 1703: pywebview keeps system DPI.
+        pass
+
+
 def main():
     if "--auto-backup" in sys.argv:
         sys.exit(auto_backup_main())
+    _enable_per_monitor_dpi()
     api = BackupAPI()
     window = webview.create_window("Sauvegarde PC — Aurora", (WEB / "index.html").as_uri(), js_api=api, width=1500, height=930, min_size=(1040, 700), background_color="#0a1121")
     api._window = window

@@ -287,3 +287,62 @@ html,body{height:100%;overflow:hidden}
 .drawer-foot .hint{margin:0}
 @media(prefers-reduced-motion:reduce){.activity-drawer,.ring-fill,.chevron{transition:none}.activity-pill[data-state="busy"] .pill-dot{animation:none}}
 @media(max-width:760px){.activity-pill{max-width:50vw}.activity-drawer{padding:16px}}
+
+/* Finition : une échelle de rayons, des filets et des ombres homogènes, des focus visibles.
+   Rayon intérieur = rayon extérieur − marge quand la marge est plus petite que le rayon. */
+:root{--r-xl:18px;--r-lg:14px;--r-md:10px;--r-sm:6px;--r-pill:999px;--line:#8db4f04a;--line-soft:#8db4f030;--line-strong:#72c8ffa8;--focus:#8ce5ff;--shadow-card:inset 0 1px 0 #e8f5ff10,0 8px 22px #050d2238;--shadow-raised:0 4px 14px #3570e83d}
+/* Fond limité à la zone intérieure : un filet translucide ne double plus sa teinte sur le fond,
+   et les dégradés partent du bord extérieur, sans liseré répété dans les angles. */
+.glass,.primary,.secondary,.choice,.item,.chip,.pill,.log-filter,.activity-pill,.op-head,.op-result,.warning,.update-banner,#notice,.drawer-progress,.confirmation-icon{background-origin:border-box;background-clip:padding-box}
+.glass{border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--shadow-card)}
+.hub-card{border-color:var(--line)}
+.category:hover{border-color:var(--line-strong)}
+/* Les cartes ne rognent plus l’ombre du bouton principal ni le halo des icônes ; le texte reste borné par min-width:0 et les ellipses. */
+.status-card,.destination-card,.category{overflow:visible}
+.main{padding-bottom:32px}
+.update-banner,.drawer-progress{border-radius:var(--r-lg)}
+.confirmation-dialog{border-radius:var(--r-xl);border-color:var(--line)}
+.dest-inner,.cat-icon,.choice,.item,.warning,#notice,.op-head,.op-result,.recovery-code,.confirmation-icon,.icon-button,.confirmation-close,.activity #log{border-radius:var(--r-md)}
+.entry,.section-head,.cat-check,.text-button,.foot-action,.entry-hidden button{border-radius:var(--r-sm)}
+.pill,.chip,.progress-track,.progress-track>div,.capacity-track,.capacity-track>div{border-radius:var(--r-pill)}
+.progress-track{overflow:hidden}
+.choice,.item{border-color:var(--line-soft)}
+.dest-inner{border-color:var(--line-soft)}
+/* Navigation : l’indicateur actif est une barre arrondie, et non une bordure gauche épaisse
+   qui se tordait dans l’arrondi du bouton. */
+.nav{position:relative;border-left:0;border-radius:var(--r-md);padding-left:16px}
+.nav::before{content:"";position:absolute;left:0;top:9px;bottom:9px;width:3px;border-radius:var(--r-pill);background:transparent;transition:background-color .2s}
+.nav.active::before{background:#62d8ff}
+@media(max-width:760px){.nav{padding-left:12px}}
+/* Boutons : un seul rayon, survol sans filtre (le filtre forçait une rastérisation floue aux échelles 125 % et 150 %). */
+.primary,.secondary,.confirmation-actions button{border-radius:var(--r-md);transition:background-color .15s,border-color .15s,box-shadow .15s}
+.primary{box-shadow:var(--shadow-raised),inset 0 1px 0 #ffffff40}
+.primary:hover{filter:none;background-image:linear-gradient(#ffffff1f,#ffffff1f),linear-gradient(105deg,#21bdf9,#3974f0 52%,#a263ed)}
+.primary.big{border-radius:var(--r-lg);box-shadow:0 6px 20px #4a3fe24d,inset 0 1px 0 #ffffff40}
+.primary.big span svg{width:20px;height:20px;vertical-align:-2px}
+.primary:disabled:hover{background-image:linear-gradient(105deg,#21bdf9,#3974f0 52%,#a263ed)}
+.secondary{border-color:var(--line)}
+.secondary:hover{border-color:var(--line-strong)}
+.secondary:disabled:hover{background-color:#29466a70;border-color:var(--line)}
+.btn-ico{flex:none;width:16px;height:16px;vertical-align:-3px;margin-right:8px}
+.detail-row>span:first-child{display:inline-flex;align-items:center;gap:9px;flex:none}
+.detail-row .btn-ico{margin:0;color:#9bbaff}
+.icon-button svg,.confirmation-close svg{width:16px;height:16px}
+.chip button{display:inline-grid;place-items:center}
+.chip button svg{width:10px;height:10px}
+/* Case à cocher des catégories : coche vectorielle centrée au lieu d’un caractère. */
+.cat-check{box-shadow:0 0 8px #397cf352}
+.cat-check:checked{background:#437df1 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m3.5 8.5 3 3 6-7' fill='none' stroke='white' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/15px no-repeat}
+.cat-check:checked:after{content:none}
+/* Champs : même filet, même rayon, même état de focus. */
+.form-row input,.inline-field input,.inline-field select,.secret-field input,#log-search,#software-search{border:1px solid var(--line);border-radius:var(--r-md);background:#0b203b;color:#fff;transition:border-color .15s}
+#software-search{padding:10px 11px;font:inherit}
+.form-row input:hover,.inline-field input:hover,.inline-field select:hover,.secret-field input:hover,#log-search:hover,#software-search:hover{border-color:#8db4f078}
+.form-row input:focus,.inline-field input:focus,.inline-field select:focus,.secret-field input:focus,#log-search:focus,#software-search:focus{border-color:var(--line-strong)}
+/* Focus clavier unique : un anneau net qui épouse le rayon de chaque composant. */
+:focus{outline:none}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+input:focus-visible,select:focus-visible{outline-offset:1px}
+/* Dans les zones qui défilent, l’anneau est tracé à l’intérieur pour ne pas être rogné. */
+.nav:focus-visible,.op-head:focus-visible,.section-head:focus-visible{outline-offset:-2px}
+[tabindex="-1"]:focus-visible{outline:none}
