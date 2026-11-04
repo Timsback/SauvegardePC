@@ -100,6 +100,27 @@ ou une ancienne sauvegarde 1.10. Cochez les éléments à restaurer :
 - **Wi-Fi** : `netsh wlan add profile`. **Pilotes** : `pnputil /add-driver`
   (droits administrateur).
 
+### Migration vers une session de domaine
+
+Dans **Outils → Migration vers un domaine**, restaurez une sauvegarde faite sur un
+ancien PC (groupe de travail, données locales) dans la session de l'utilisateur
+actuellement connecté, sur un PC joint à un domaine Active Directory dont le dossier
+personnel vit sur un lecteur réseau (NAS). Contrairement à **Restauration**, cet outil
+ne restaure que les dossiers personnels standards (Bureau, Documents, Images,
+Téléchargements, Vidéos, Musique), propose un **assistant de tri avant la copie**
+(doublons par SHA-256, installeurs, images disque, gros fichiers, vidéos, raccourcis
+et fichiers système décochés par défaut, export CSV) et choisit par défaut un
+sous-dossier `Migration – <ancien PC> – <date>` du dossier personnel réseau plutôt que
+le dossier connu de la session, pour ne jamais mélanger avec l'existant.
+
+L'application affiche le domaine, l'utilisateur, le dossier personnel réseau détecté et
+bloque la migration si elle est lancée en administrateur (les fichiers copiés
+appartiendraient alors à l'administrateur, hors du quota de l'utilisateur). Seuls les
+favoris des navigateurs sont restaurés par défaut (jamais les mots de passe) ; les
+fichiers Outlook `.pst` et un inventaire propre des programmes (CSV filtré, sans
+réinstallation) sont disponibles séparément. Le mode simulation (par défaut) ne copie
+rien et ne produit qu'un rapport ; la sauvegarde source n'est jamais modifiée.
+
 ### Sauvegarde automatique
 
 Dans **Paramètres → Sauvegarde automatique**, choisissez chaque jour ou chaque
@@ -194,6 +215,9 @@ Application-sauvegardePC/
     │                         estimation et restauration complète
     ├── backup_tasks.py    → briques Windows (dossiers connus, navigateurs,
     │                         messagerie, licences, winget, Wi-Fi, pilotes, disques)
+    ├── migration.py       → migration vers une session de domaine (tri, destination
+    │                         par catégorie, favoris de navigateur, inventaire programmes)
+    ├── vault.py           → protection des licences et mots de passe Wi-Fi
     ├── scheduler.py       → sauvegarde automatique (Planificateur de tâches)
     ├── software_*.py      → sauvegarde et réinstallation par logiciel
     └── app_updates.py     → mises à jour depuis GitHub Releases

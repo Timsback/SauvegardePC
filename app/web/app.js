@@ -103,7 +103,7 @@ $('#confirmation-cancel').addEventListener('click',()=>closeConfirmation(false))
 $('#confirmation-accept').addEventListener('click',()=>closeConfirmation(true));
 const svg=(body)=>`<svg viewBox="0 0 36 36" width="38" height="38" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
 const cardIcons={files:svg('<path d="M4 9a2 2 0 0 1 2-2h7l3 3.5h14a2 2 0 0 1 2 2V28a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2zM4 14.5h28"/>'),browsers:svg('<circle cx="18" cy="18" r="14"/><path d="M4 18h28M18 4c-8 8-8 20 0 28M18 4c8 8 8 20 0 28"/>'),licenses:svg('<circle cx="13" cy="13" r="9"/><path d="m19 20 12 12M24 25l-5 5"/><circle cx="11" cy="11" r="1"/>'),programs:svg('<rect x="5" y="5" width="10" height="10" rx="1"/><rect x="21" y="5" width="10" height="10" rx="1"/><rect x="5" y="21" width="10" height="10" rx="1"/><rect x="21" y="21" width="10" height="10" rx="1"/>'),email:svg('<rect x="3" y="7" width="30" height="22" rx="2"/><path d="m3 9 15 12L33 9"/>'),wifi:svg('<path d="M3 14c9-9 21-9 30 0M8 19c6-6 14-6 20 0M13 24c3-3 7-3 10 0"/><circle cx="18" cy="29" r="2" fill="currentColor"/>')};
-const navIcons={home:svg('<path d="m4 17 14-12 14 12M8 16v15h8V22h5v9h8V16" fill="currentColor" stroke="none"/>'),backups:svg('<circle cx="18" cy="18" r="14"/><path d="M18 9v10l7 4"/>'),restore:svg('<path d="M5 18A13 13 0 1 0 18 5a14 14 0 0 0-9.7 4L5 12.3"/><path d="M5 5v7.3h7.3"/>'),destination:svg('<ellipse cx="18" cy="8" rx="12" ry="5"/><path d="M6 8v20c0 7 24 7 24 0V8M6 18c0 7 24 7 24 0"/>'),settings:svg('<circle cx="18" cy="18" r="5"/><path d="m16 3-1 4-4 2-4-2-4 7 3 3v3l-3 3 4 7 4-2 4 2 1 4h5l1-4 4-2 4 2 4-7-3-3v-3l3-3-4-7-4 2-4-2-1-4z"/>'),tools:svg('<path d="M22.5 6.5A7.5 7.5 0 0 0 13.6 16.3L5.3 24.6a3 3 0 0 0 4.2 4.2l8.3-8.3A7.5 7.5 0 0 0 27.6 11.6L24.7 14.5 19.6 9.4z"/>')};
+const navIcons={home:svg('<path d="m4 17 14-12 14 12M8 16v15h8V22h5v9h8V16" fill="currentColor" stroke="none"/>'),backups:svg('<circle cx="18" cy="18" r="14"/><path d="M18 9v10l7 4"/>'),restore:svg('<path d="M5 18A13 13 0 1 0 18 5a14 14 0 0 0-9.7 4L5 12.3"/><path d="M5 5v7.3h7.3"/>'),migration:svg('<path d="M6 12h22M22 6l6 6-6 6M30 24H8M14 18l-6 6 6 6"/>'),destination:svg('<ellipse cx="18" cy="8" rx="12" ry="5"/><path d="M6 8v20c0 7 24 7 24 0V8M6 18c0 7 24 7 24 0"/>'),settings:svg('<circle cx="18" cy="18" r="5"/><path d="m16 3-1 4-4 2-4-2-4 7 3 3v3l-3 3 4 7 4-2 4 2 1 4h5l1-4 4-2 4 2 4-7-3-3v-3l3-3-4-7-4 2-4-2-1-4z"/>'),tools:svg('<path d="M22.5 6.5A7.5 7.5 0 0 0 13.6 16.3L5.3 24.6a3 3 0 0 0 4.2 4.2l8.3-8.3A7.5 7.5 0 0 0 27.6 11.6L24.7 14.5 19.6 9.4z"/>')};
 Object.assign(navIcons,{files:cardIcons.files,browsers:cardIcons.browsers,email:cardIcons.email,licenses:cardIcons.licenses,wifi:cardIcons.wifi,programs:cardIcons.programs,checklist:svg('<path d="m6 18 8 8L30 9"/>')});
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const api=()=>window.pywebview?.api;
@@ -129,6 +129,7 @@ const tools=[
   {page:'software',icon:'programs',tone:'green',title:'Sauvegarder un logiciel',desc:'Copier les paramètres d’un logiciel précis et préparer sa réinstallation'},
   {page:'licenses',icon:'licenses',tone:'purple',title:'Clés et licences',desc:'Retrouver la clé Windows OEM et noter vos clés logicielles'},
   {page:'destination',icon:'destination',tone:'',title:'Vérifier une sauvegarde',desc:'Relire une version et contrôler chaque fichier (SHA-256)'},
+  {page:'migration',icon:'migration',tone:'',title:'Migration vers un domaine',desc:'Restaurer une ancienne sauvegarde dans la session actuelle, sur un PC joint au domaine'},
   {page:'checklist',icon:'checklist',tone:'pink',title:'Checklist avant réinstallation',desc:'Les étapes à valider avant de réinstaller Windows ou de changer de PC'}
 ];
 function render(s){state=s;const dest=s.destination||'';
@@ -146,6 +147,7 @@ function render(s){state=s;const dest=s.destination||'';
   setHTML('#checklist',checklist);
   renderSoftwareState(s);
   renderUpdates(s);
+  renderMigration(s);
 }
 function renderDestination(s){
   const info=s.destination_info||{};
@@ -221,12 +223,26 @@ async function onAction(action){if(action==='software-list'){await loadSoftware(
     if(!await confirmAction({title:'Restaurer cette sauvegarde sur ce PC ?',message,acceptLabel:'Restaurer'}))return;
     if(chosen.includes('wifi')&&state.restore_sensitive?.wifi==='encrypted'&&!await unlockRestore())return;
     await operation('restore_full','Restauration démarrée. Suivez sa progression dans Activité.',chosen);return}
+  if(action==='migration-choose-source'){const r=await invoke('choose_migration_source');if(r)render(r);return}
+  if(action==='migration-scan'){await operation('scan_migration','Analyse démarrée. Suivez sa progression dans Activité.');return}
+  if(action==='migration-export-csv'){const r=await invoke('export_migration_csv');if(r&&!r.cancelled){if(r.ok)notice('Tri exporté en CSV.');else if(!r.ok)notice(r.error,true)}return}
+  if(action==='migration-space'){const r=await invoke('migration_space_estimate');if(!r)return;if(!r.ok){notice(r.error,true);return}
+    setText('#migration-space',r.estimates.map(e=>`${e.categories.join(', ')} → ${esc(e.destination)} : ${e.checked_size_text} à copier, ${e.free_bytes_text} libres${e.fits?'':' — ESPACE INSUFFISANT'}`).join(' · '));
+    $('#migration-space').classList.toggle('error-text',r.estimates.some(e=>!e.fits));return}
+  if(action==='migration-programs'){await operation('export_migration_program_inventory','Export de l’inventaire démarré.');return}
+  if(action==='migration-run'){
+    const simulate=$('#migration-simulate').checked;
+    const message=simulate?'Aucun fichier ne sera copié : seul un rapport de ce qui serait fait sera produit. Continuer ?':'Les fichiers cochés dans le tri seront copiés vers les destinations choisies. Rien n’est supprimé sur l’ancien PC. Continuer ?';
+    if(!await confirmAction({title:simulate?'Lancer la simulation ?':'Lancer la migration ?',message,acceptLabel:simulate?'Simuler':'Migrer'}))return;
+    await operation('run_migration',simulate?'Simulation démarrée. Suivez sa progression dans Activité.':'Migration démarrée. Suivez sa progression dans Activité.',$('#migration-browsers').checked,$('#migration-outlook').checked);return}
 }
 async function operation(method,started,...args){const result=await invoke(method,...args);if(result&&!result.ok)notice(result.error,true);else if(result){notice(started);await refresh()}}
 document.addEventListener('click',async e=>{const page=e.target.closest('[data-page]');if(page){e.preventDefault();showPage(page.dataset.page);return}if(e.target.closest('[data-back]')){showPage(currentMain);return}const action=e.target.closest('[data-action]');if(action){await onAction(action.dataset.action);return}const remove=e.target.closest('[data-remove-folder]');if(remove){const result=await invoke('remove_custom_folder',remove.dataset.removeFolder);if(result)render(result);return}const restore=e.target.closest('[data-restore]');if(restore){const browser=restore.dataset.restore;if(!await confirmAction({title:'Restaurer '+browser+' ?',message:'Fermez '+browser+' avant de restaurer son profil.',acceptLabel:'Restaurer'}))return;const result=await invoke('restore_browser',browser);if(result&&!result.ok)notice(result.error,true);else notice('Restauration démarrée.');return}const lic=e.target.closest('[data-license-remove]');if(lic){licenses.splice(Number(lic.dataset.licenseRemove),1);renderLicenses();notice('Licence retirée de la liste. Enregistrez pour appliquer.');return}
   const excl=e.target.closest('[data-remove-exclusion]');if(excl){const s=await invoke('remove_exclusion',excl.dataset.removeExclusion);if(s)render(s);return}
   const open=e.target.closest('[data-open-folder]');if(open){await invoke('open_folder',open.dataset.openFolder);return}
-  const verify=e.target.closest('[data-verify-version]');if(verify){if(await confirmAction({title:'Vérifier cette version ?',message:'Chaque fichier est relu sur le support et comparé à son empreinte SHA-256. Cela peut prendre du temps sur une grosse sauvegarde.',acceptLabel:'Vérifier'}))await operation('verify_version','Vérification démarrée.',verify.dataset.verifyVersion)}});
+  const verify=e.target.closest('[data-verify-version]');if(verify){if(await confirmAction({title:'Vérifier cette version ?',message:'Chaque fichier est relu sur le support et comparé à son empreinte SHA-256. Cela peut prendre du temps sur une grosse sauvegarde.',acceptLabel:'Vérifier'}))await operation('verify_version','Vérification démarrée.',verify.dataset.verifyVersion);return}
+  const expand=e.target.closest('[data-migration-expand]');if(expand){await expandMigrationGroup(expand.dataset.migrationExpand);return}
+  const manualDest=e.target.closest('[data-migration-manual]');if(manualDest){const r=await invoke('choose_migration_manual_destination',manualDest.dataset.migrationManual);if(r)render(r)}});
 document.addEventListener('change',async e=>{const t=e.target;let s=null;
   if(t.dataset.category)s=await invoke('set_selection','category',t.dataset.category,t.checked);
   else if(t.dataset.folder)s=await invoke('set_selection','folder',t.dataset.folder,t.checked);
@@ -238,6 +254,11 @@ document.addEventListener('change',async e=>{const t=e.target;let s=null;
   else if(t.id==='verify-after-copy')s=await invoke('set_setting','verify_after_copy',t.checked);
   else if(t.id==='auto-enabled'||t.id==='auto-interval'){s=await invoke('set_auto_backup',$('#auto-enabled').checked,Number($('#auto-interval').value));if(s)notice($('#auto-enabled').checked?'Sauvegarde automatique activée.':'Sauvegarde automatique désactivée.')}
   else if(t.id==='restore-version')s=await invoke('set_restore_version',t.value);
+  else if(t.id==='migration-version')s=await invoke('set_migration_version',t.value);
+  else if(t.id==='migration-simulate')s=await invoke('set_migration_simulate',t.checked);
+  else if(t.dataset.migrationGroup){s=await invoke('set_migration_group_decision',t.dataset.migrationGroup,t.checked);migrationExpanded='';$('#migration-group-detail').innerHTML=''}
+  else if(t.dataset.migrationFile){const [category,relative]=t.dataset.migrationFile.split('|');s=await invoke('set_migration_file_decision',category,relative,t.checked)}
+  else if(t.dataset.migrationDest)s=await invoke('set_migration_destination_mode',t.dataset.migrationDest,t.value);
   if(s)render(s);else if(state)render(state)});
 $('#exclusion-input').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();onAction('add-exclusion')}});
 $('#cancel-operation').addEventListener('click',async()=>{const r=await invoke('cancel_operation');if(r&&!r.ok)notice(r.error,true);else await refresh()});
@@ -468,6 +489,46 @@ async function softwareOperation(method,...args){
   if(result&&!result.cancelled){notice(result.ok?'Opération démarrée. Consultez le journal d’activité.':result.error,!result.ok);await refresh();}
 }
 $('#software-search').addEventListener('input',renderSoftwareList);
+// ---------------------------------------------------------------------------
+// Migration vers une session de domaine : tri avant copie, destination par
+// catégorie, favoris de navigateur, inventaire des programmes.
+// ---------------------------------------------------------------------------
+const GROUP_LABELS={normal:'Fichiers normaux',doublon:'Doublons',installeur:'Installeurs (.exe/.msi)',image_disque:'Images disque (.iso)',archive:'Archives',video:'Vidéos',gros_fichier:'Gros fichiers',inutile:'Fichiers système inutiles',raccourci:'Raccourcis (.lnk)'};
+const GROUP_ORDER=['doublon','installeur','image_disque','gros_fichier','video','raccourci','inutile','archive','normal'];
+let migrationExpanded='';
+function renderMigration(s){
+  const m=s.migration;if(!m)return;
+  const env=m.environment||{};
+  setHTML('#migration-environment',`<h3>Session actuelle</h3><p>${env.is_domain_joined?`Domaine : <strong>${esc(env.domain)}</strong> · Utilisateur : <strong>${esc(env.user_full)}</strong>`:'<span class="warning">Ce PC ne semble pas joint à un domaine.</span>'}</p><p class="hint">Dossier personnel réseau : ${esc(env.network_home||'non détecté')}</p>${env.is_admin?'<p class="warning">Application lancée en administrateur : les fichiers copiés appartiendraient à l’administrateur et échapperaient au quota de l’utilisateur. Fermez cette fenêtre et relancez l’application avec les droits normaux dans la session de l’utilisateur.</p>':''}`);
+  setText('#migration-source-path',m.source||'Aucun dossier choisi.');
+  $('#migration-version-field').hidden=(m.versions||[]).length<2;
+  setHTML('#migration-version',(m.versions||[]).map(v=>`<option value="${esc(v.folder)}" ${v.folder===m.version?'selected':''}>${esc(v.legacy?'Ancienne sauvegarde':formatDate(v.created)+' · '+v.computer+' · '+v.status_label)}</option>`).join(''));
+  setChecked('#migration-simulate',m.simulate);
+  const summaryPanel=$('#migration-summary'),destPanel=$('#migration-destinations'),extrasPanel=$('#migration-extras'),runBtn=$('#migration-run');
+  summaryPanel.hidden=destPanel.hidden=extrasPanel.hidden=runBtn.hidden=!m.has_plan;
+  if(!m.has_plan)return;
+  const groups=m.summary?.groups||{};
+  setHTML('#migration-groups',GROUP_ORDER.filter(tri=>groups[tri]).map(tri=>{
+    const g=groups[tri],all=g.checked_count===g.count,none=g.checked_count===0;
+    return `<label class="item"><span><input type="checkbox" data-migration-group="${tri}" ${all?'checked':''} ${!all&&!none?'data-indeterminate':''}> ${esc(GROUP_LABELS[tri]||tri)} — ${g.count} fichier(s), ${esc(bytesText(g.size))}${g.checked_count?` (dont ${g.checked_count} à copier, ${esc(bytesText(g.checked_size))})`:''}</span><button type="button" class="secondary" data-migration-expand="${tri}">Détail</button></label>`;
+  }).join(''));
+  document.querySelectorAll('[data-indeterminate]').forEach(el=>el.indeterminate=true);
+  runBtn.disabled=s.busy;
+  setHTML('#migration-destination-rows',(m.standard_folders||[]).map(name=>{
+    const choice=m.destinations?.[name]||{mode:'network_personal',manual_path:''};
+    return `<div class="item"><span><strong>${esc(name)}</strong>${choice.mode==='manual'&&choice.manual_path?` · ${esc(choice.manual_path)}`:''}</span><span class="version-actions"><select data-migration-dest="${esc(name)}"><option value="network_personal" ${choice.mode==='network_personal'?'selected':''}>Dossier personnel réseau (sous-dossier Migration)</option><option value="known_folder" ${choice.mode==='known_folder'?'selected':''}>Dossier connu de la session</option><option value="manual" ${choice.mode==='manual'?'selected':''}>Dossier choisi manuellement</option></select>${choice.mode==='manual'?`<button type="button" class="secondary" data-migration-manual="${esc(name)}">Choisir…</button>`:''}</span></div>`;
+  }).join(''));
+  const r=m.result;
+  setText('#migration-result',r?`${r.simulate?'[Simulation] ':''}${r.copied} copié(s), ${r.skipped} déjà présent(s), ${r.ignored_conflicts} ignoré(s), ${r.errors_total} erreur(s)${r.mismatches_total?`, ${r.mismatches_total} empreinte(s) différente(s)`:''}.${m.report?' Rapport : '+m.report:''}`:'');
+}
+function bytesText(n){if(n<1024)return n+' o';const u=['Ko','Mo','Go','To'];let i=-1;do{n/=1024;i++}while(n>=1024&&i<u.length-1);return n.toFixed(1).replace('.',',')+' '+u[i]}
+async function expandMigrationGroup(tri){
+  migrationExpanded=migrationExpanded===tri?'':tri;
+  if(!migrationExpanded){$('#migration-group-detail').innerHTML='';return}
+  const r=await invoke('migration_plan_rows',tri,0,200);
+  if(!r)return;
+  $('#migration-group-detail').innerHTML=`<h4>${esc(GROUP_LABELS[tri]||tri)} (${r.total})</h4><div class="item-list">${r.rows.map(row=>`<label class="item"><span><input type="checkbox" data-migration-file="${esc(row.category)}|${esc(row.relative)}" ${row.checked?'checked':''}> ${esc(row.category)}/${esc(row.relative)} — ${esc(row.size_text)}</span>${row.reason?`<span class="hint">${esc(row.reason)}</span>`:''}</label>`).join('')}${r.total>r.rows.length?`<p class="hint">… et ${r.total-r.rows.length} de plus (affinez avec l’export CSV).</p>`:''}</div>`;
+}
 document.addEventListener('click',async e=>{
   const analyze=e.target.closest('[data-software-analyze]');
   if(analyze){await softwareOperation('analyze_software',analyze.dataset.softwareAnalyze);return;}

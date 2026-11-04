@@ -30,6 +30,9 @@ def make_api(dest):
     api.restore_source, api.auto_seen, api.auto_enabled = '', '', False
     api.restore_sensitive, api.restore_private, api.clear_folders = {}, None, 0
     api.software_plan, api.software_backups, api.software_result = None, [], None
+    api.migration_source, api.migration_versions, api.migration_version, api.migration_old_pc = '', [], '', ''
+    api.migration_plan, api.migration_simulate, api.migration_result, api.migration_report = None, True, None, ''
+    api.migration_destinations = {name: {'mode': 'network_personal', 'manual_path': ''} for name in bt.STANDARD_FOLDERS}
     api.updates = MagicMock()
     api.updates.snapshot.return_value = {}
     return api
@@ -194,6 +197,65 @@ class OperationTests(ApiTest):
     def test_open_folder_refuses_unknown_paths(self):
         with self.assertRaises(ValueError):
             self.api.open_folder('C:\\Windows')
+
+
+class MigrationApiTests(ApiTest):
+    def setUp(self):
+        super().setUp()
+        source = self.dest / 'source_documents'
+        (source).mkdir()
+        (source / 'a.txt').write_text('contenu')
+        (source / 'setup.exe').write_text('installeur')
+        config = json.loads(json.dumps(bt.DEFAULT_CONFIG))
+        config['selected_folders'] = ['Documents']
+        with patch.object(bt, 'get_known_folder', return_value=source):
+            result = engine.run_backup(self.dest / 'migration_source', config, ['files'], engine.Job(lambda m: None), 'test')
+        self.version = result['folder']
+        self.api.migration_version = self.version
+        self.api.migration_old_pc = 'ANCIEN-PC'
+
+    def test_scan_then_run_migration_in_simulation_copies_nothing(self):
+        self.api.scan_migration()
+        self.wait()
+        summary = self.api._migration_state()['summary']
+        self.assertEqual(summary['total_count'], 2)
+        self.assertEqual(summary['total_checked_count'], 1)  # setup.exe exclu par défaut
+
+        new_session = self.dest / 'nouvelle_session'
+        self.api.migration_destinations['Documents'] = {'mode': 'manual', 'manual_path': str(new_session)}
+        self.api.run_migration(include_browser_favorites=False, include_outlook=False)
+        self.wait()
+        self.assertFalse((new_session / 'Documents' / 'a.txt').exists())
+        self.assertTrue(self.api.migration_result['simulate'])
+        self.assertEqual(self.api.migration_result['copied'], 1)
+
+    def test_run_migration_without_simulation_copies_checked_files_only(self):
+        self.api.scan_migration()
+        self.wait()
+        new_session = self.dest / 'nouvelle_session'
+        self.api.migration_destinations['Documents'] = {'mode': 'manual', 'manual_path': str(new_session)}
+        self.api.migration_simulate = False
+        self.api.run_migration(include_browser_favorites=False, include_outlook=False)
+        self.wait()
+        self.assertTrue((new_session / 'Documents' / 'a.txt').exists())
+        self.assertFalse((new_session / 'Documents' / 'setup.exe').exists())
+
+    def test_run_migration_refuses_when_elevated(self):
+        self.api.scan_migration()
+        self.wait()
+        with patch.object(bt, 'is_admin', return_value=True):
+            result = self.api.run_migration()
+        self.assertFalse(result['ok'])
+
+    def test_space_estimate_reports_per_destination(self):
+        self.api.scan_migration()
+        self.wait()
+        new_session = self.dest / 'nouvelle_session'
+        self.api.migration_destinations['Documents'] = {'mode': 'manual', 'manual_path': str(new_session)}
+        result = self.api.migration_space_estimate()
+        self.assertTrue(result['ok'])
+        self.assertEqual(len(result['estimates']), 1)
+        self.assertTrue(result['estimates'][0]['fits'])
 
 
 class AutoBackupTests(ApiTest):

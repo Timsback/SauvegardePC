@@ -15,6 +15,7 @@ import webview
 
 import backup_tasks as bt
 import backup_engine as engine
+import migration as mig
 import scheduler
 import software_backup as sb
 import app_updates
@@ -84,6 +85,15 @@ class BackupAPI:
         self.estimate = None
         self.versions = []
         self.dest_info = {}
+        self.migration_source = ""
+        self.migration_versions = []
+        self.migration_version = ""
+        self.migration_old_pc = ""
+        self.migration_plan = None
+        self.migration_destinations = {name: {"mode": mig.DEST_NETWORK_PERSONAL, "manual_path": ""} for name in bt.STANDARD_FOLDERS}
+        self.migration_simulate = True
+        self.migration_result = None
+        self.migration_report = ""
         self.auto_enabled = scheduler.is_enabled()
         self.auto_seen = scheduler.read_status().get("last_success", "")
         self.updates = app_updates.UpdateManager()
@@ -203,7 +213,25 @@ class BackupAPI:
                 "update_info": dict(self.updates.snapshot(), enabled=self.config['auto_check_updates']),
                 "events": self.events[-400:],
                 "event_seq": self.event_seq,
+                "migration": self._migration_state(),
             }
+
+    def _migration_state(self):
+        plan = self.migration_plan
+        return {
+            "source": self.migration_source,
+            "versions": self.migration_versions,
+            "version": self.migration_version,
+            "old_pc": self.migration_old_pc,
+            "environment": mig.detect_environment(),
+            "has_plan": plan is not None,
+            "summary": mig.plan_summary(plan) if plan else None,
+            "destinations": self.migration_destinations,
+            "simulate": self.migration_simulate,
+            "result": self.migration_result,
+            "report": self.migration_report,
+            "standard_folders": bt.STANDARD_FOLDERS,
+        }
 
     # ------------------------------------------------------------------ #
     # Mises à jour
@@ -705,6 +733,201 @@ class BackupAPI:
         folder = Path(self.restore_version)
         return self._run(f"Restauration de {name}",
                          lambda: engine.restore(folder, ["browsers"], self._new_job(), browser=name), cancelable=True)
+
+    # ------------------------------------------------------------------ #
+    # Migration vers une session de domaine
+    # ------------------------------------------------------------------ #
+
+    def choose_migration_source(self):
+        path = self._pick_folder(self.migration_source)
+        if path:
+            versions = [_version_view(v) for v in engine.resolve_restore_source(Path(path))]
+            with self.lock:
+                self.migration_source = path
+                self.migration_versions = versions
+                self.migration_plan = None
+                self.migration_result = None
+                self.migration_report = ""
+            self.set_migration_version(versions[0]["folder"] if versions else "")
+        return self.get_state()
+
+    def set_migration_version(self, folder):
+        if folder and folder not in [v["folder"] for v in self.migration_versions]:
+            raise ValueError("Version inconnue")
+        with self.lock:
+            self.migration_version = folder
+            self.migration_old_pc = mig.parse_old_pc_name(Path(folder)) if folder else ""
+            self.migration_plan = None
+            self.migration_result = None
+            self.migration_report = ""
+        return self.get_state()
+
+    def choose_migration_manual_destination(self, category):
+        if category not in bt.STANDARD_FOLDERS:
+            raise ValueError("Catégorie inconnue")
+        path = self._pick_folder(self.migration_destinations.get(category, {}).get("manual_path", ""))
+        if path:
+            with self.lock:
+                self.migration_destinations[category] = {"mode": mig.DEST_MANUAL, "manual_path": path}
+        return self.get_state()
+
+    def set_migration_destination_mode(self, category, mode):
+        if category not in bt.STANDARD_FOLDERS or mode not in (mig.DEST_KNOWN_FOLDER, mig.DEST_NETWORK_PERSONAL, mig.DEST_MANUAL):
+            raise ValueError("Choix de destination invalide")
+        with self.lock:
+            current = self.migration_destinations.get(category, {})
+            self.migration_destinations[category] = {"mode": mode, "manual_path": current.get("manual_path", "")}
+        return self.get_state()
+
+    def set_migration_simulate(self, enabled):
+        with self.lock:
+            self.migration_simulate = bool(enabled)
+        return self.get_state()
+
+    def scan_migration(self):
+        if not self.migration_version:
+            return {"ok": False, "error": "Choisissez d’abord la sauvegarde à migrer."}
+        folder = Path(self.migration_version)
+
+        def operation():
+            records = mig.scan_migration(folder, self._log, self._new_job())
+            plan = mig.build_triage_plan(records)
+            with self.lock:
+                self.migration_plan = plan
+                self.migration_result = None
+                self.migration_report = ""
+            summary = mig.plan_summary(plan)
+            self._log(f"Analyse terminée : {summary['total_count']} fichier(s), {bt.format_size(summary['total_size'])}.")
+
+        return self._run("Analyse de la sauvegarde à migrer", operation, cancelable=True)
+
+    def migration_plan_rows(self, tri, offset=0, limit=200):
+        with self.lock:
+            plan = self.migration_plan
+        if not plan:
+            return {"rows": [], "total": 0}
+        rows = [e for e in plan if e["tri"] == tri]
+        page = rows[int(offset):int(offset) + int(limit)]
+        return {
+            "rows": [{"category": r["category"], "relative": r["relative"], "size_text": bt.format_size(r["size"]),
+                      "checked": r["checked"], "reason": r.get("reason", "")} for r in page],
+            "total": len(rows),
+        }
+
+    def set_migration_group_decision(self, tri, checked):
+        with self.lock:
+            if not self.migration_plan:
+                return {"ok": False, "error": "Lancez d’abord une analyse."}
+            for entry in self.migration_plan:
+                if entry["tri"] == tri:
+                    entry["checked"] = bool(checked)
+        return self.get_state()
+
+    def set_migration_file_decision(self, category, relative, checked):
+        with self.lock:
+            if not self.migration_plan:
+                return {"ok": False, "error": "Lancez d’abord une analyse."}
+            for entry in self.migration_plan:
+                if entry["category"] == category and entry["relative"] == relative:
+                    entry["checked"] = bool(checked)
+                    break
+        return self.get_state()
+
+    def _resolve_migration_destination(self, category, environment=None):
+        environment = environment or mig.detect_environment()
+        choice = self.migration_destinations.get(category, {"mode": mig.DEST_NETWORK_PERSONAL, "manual_path": ""})
+        return mig.resolve_destination(category, choice["mode"], self.migration_old_pc or "PC",
+                                       environment.get("network_home", ""), choice.get("manual_path", ""))
+
+    def migration_space_estimate(self):
+        with self.lock:
+            plan = self.migration_plan
+        if not plan:
+            return {"ok": False, "error": "Lancez d’abord une analyse."}
+        environment = mig.detect_environment()
+        by_destination = {}
+        for category in {e["category"] for e in plan}:
+            try:
+                dest = self._resolve_migration_destination(category, environment)
+            except ValueError as exc:
+                return {"ok": False, "error": str(exc)}
+            by_destination.setdefault(str(dest), []).append(category)
+        estimates = []
+        for dest, categories in by_destination.items():
+            sub_plan = [e for e in plan if e["category"] in categories]
+            estimates.append({"destination": dest, "categories": categories, **mig.estimate_space(sub_plan, Path(dest))})
+        return {"ok": True, "estimates": estimates}
+
+    def export_migration_csv(self):
+        with self.lock:
+            plan = self.migration_plan
+            source = self.migration_version
+        if not plan:
+            return {"ok": False, "error": "Lancez d’abord une analyse."}
+        selected = self._window.create_file_dialog(webview.FileDialog.SAVE, directory=source, save_filename="tri_migration.csv")
+        if not selected:
+            return {"cancelled": True}
+        mig.export_plan_csv(plan, Path(selected if isinstance(selected, str) else selected[0]))
+        return {"ok": True}
+
+    def export_migration_program_inventory(self):
+        if not self.migration_version:
+            return {"ok": False, "error": "Choisissez d’abord la sauvegarde à migrer."}
+        folder = Path(self.migration_version)
+
+        def operation():
+            mig.export_program_inventory(folder, self._log)
+
+        return self._run("Export de l’inventaire des programmes", operation)
+
+    def run_migration(self, include_browser_favorites=True, include_outlook=True):
+        if not self.migration_version:
+            return {"ok": False, "error": "Choisissez d’abord la sauvegarde à migrer."}
+        with self.lock:
+            plan = self.migration_plan
+            simulate = self.migration_simulate
+        if not plan:
+            return {"ok": False, "error": "Lancez d’abord une analyse."}
+        if bt.is_admin():
+            return {"ok": False, "error": "Fermez cette fenêtre et relancez l’application sans droits administrateur : "
+                                           "les fichiers copiés en administrateur échapperaient au quota de l’utilisateur."}
+        folder = Path(self.migration_version)
+        environment = mig.detect_environment()
+        try:
+            destinations = {category: self._resolve_migration_destination(category, environment)
+                            for category in {e["category"] for e in plan}}
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+
+        def operation():
+            job = self._new_job()
+            result = mig.copy_plan(plan, destinations, self._log, job, simulate=simulate)
+            mismatches = [] if simulate else mig.verify_copy(result, self._log, job)
+            if not simulate and include_browser_favorites:
+                for name in engine.browsers_in(folder):
+                    if name == "Mozilla Firefox":
+                        mig.export_firefox_bookmarks_html(folder, destinations.get("Documents") or bt.get_known_folder("Documents"), self._log)
+                    else:
+                        mig.restore_chromium_bookmarks_only(folder, name, self._log)
+            if not simulate and include_outlook:
+                mig.copy_outlook_pst(folder, (destinations.get("Documents") or bt.get_known_folder("Documents")) / "Fichiers Outlook", self._log)
+            report_root = next(iter(destinations.values()), folder)
+            report_path = mig.write_migration_report(report_root, [
+                "Sauvegarde PC — Migration vers une session de domaine",
+                datetime.now().strftime("%d/%m/%Y %H:%M"),
+                f"Source : {folder}", f"Simulation : {'oui' if simulate else 'non'}", "",
+                *[e["message"] for e in self.events if e["kind"] == "log"],
+            ])
+            with self.lock:
+                self.migration_result = {
+                    "copied": len(result["copied"]), "skipped": len(result["skipped"]),
+                    "ignored_conflicts": len(result["ignored_conflicts"]),
+                    "errors": result["errors"][:50], "errors_total": len(result["errors"]),
+                    "mismatches": mismatches[:50], "mismatches_total": len(mismatches), "simulate": simulate,
+                }
+                self.migration_report = str(report_path)
+
+        return self._run("Migration" + (" (simulation)" if simulate else ""), operation, cancelable=True)
 
     def write_report(self):
         with self.lock:
