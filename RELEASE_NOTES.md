@@ -1,3 +1,13 @@
+# Sauvegarde PC 1.15.1
+
+## Correction : détection du domaine en session de compte local
+
+La migration vers une session de domaine indiquait à tort « Ce PC ne semble pas joint à
+un domaine » lorsque la session Windows courante utilisait un compte local (ex.
+« support »), même si le PC était bien joint à un domaine Active Directory. La
+détection s'appuie désormais sur l'appartenance au domaine de la machine elle-même
+(API Windows `NetGetJoinInformation`), et plus seulement sur le type de session ouverte.
+
 # Sauvegarde PC 1.15.0
 
 ## Migration vers une session de domaine
