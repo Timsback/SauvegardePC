@@ -26,13 +26,43 @@ import backup_tasks as bt
 # 1. Détection de l'environnement (domaine, session, dossiers redirigés)
 # --------------------------------------------------------------------------- #
 
+def _machine_domain_info() -> tuple[str, bool]:
+    """Appartenance au domaine de la MACHINE (via NetGetJoinInformation), indépendante
+    du type de session ouverte. USERDNSDOMAIN ne reflète que la session courante : un
+    compte local sur un PC joint au domaine laisse cette variable vide, d'où ce recours
+    direct à l'API Windows plutôt qu'aux seules variables d'environnement."""
+    try:
+        import ctypes
+
+        NetSetupDomainName = 3
+        name_buffer = ctypes.c_wchar_p()
+        buffer_type = ctypes.c_int()
+        result = ctypes.windll.netapi32.NetGetJoinInformation(
+            None, ctypes.byref(name_buffer), ctypes.byref(buffer_type)
+        )
+        try:
+            if result == 0:
+                return (name_buffer.value or "", buffer_type.value == NetSetupDomainName)
+        finally:
+            if name_buffer.value is not None:
+                ctypes.windll.netapi32.NetApiBufferFree(name_buffer)
+    except Exception:
+        pass
+    return "", False
+
+
 def detect_environment() -> dict:
     """Décrit la session Windows courante : domaine, utilisateur, dossier personnel
     réseau, redirection éventuelle des dossiers connus, élévation administrateur."""
+    machine_domain, machine_domain_joined = _machine_domain_info()
     domain = os.environ.get("USERDNSDOMAIN", "")
     userdomain = os.environ.get("USERDOMAIN", "")
     computername = os.environ.get("COMPUTERNAME", "")
-    is_domain_joined = bool(domain) and userdomain.upper() != computername.upper()
+    # Session de domaine (USERDNSDOMAIN renseigné) OU PC joint au domaine même via une
+    # session locale (ex. compte local "support" sur un PC du domaine ARBJ.LOCAL).
+    is_domain_joined = (bool(domain) and userdomain.upper() != computername.upper()) or machine_domain_joined
+    if not domain and machine_domain_joined:
+        domain = machine_domain
 
     homeshare = os.environ.get("HOMESHARE", "")
     homedrive_env = os.environ.get("HOMEDRIVE", "")
