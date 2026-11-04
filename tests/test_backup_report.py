@@ -202,6 +202,12 @@ class OperationTests(ApiTest):
 class MigrationApiTests(ApiTest):
     def setUp(self):
         super().setUp()
+        # Les runners CI s'exécutent en administrateur ; la migration refuse ce cas
+        # (voir test_run_migration_refuses_when_elevated), donc les autres tests
+        # simulent explicitement une session normale, comme sur le PC d'un utilisateur.
+        admin_patch = patch.object(bt, 'is_admin', return_value=False)
+        admin_patch.start()
+        self.addCleanup(admin_patch.stop)
         source = self.dest / 'source_documents'
         (source).mkdir()
         (source / 'a.txt').write_text('contenu')
